@@ -48,6 +48,58 @@ light.addComponent('light', {
 light.setEulerAngles(45, 45, 0);
 app.root.addChild(light);
 
+// Sun direction sliders — create in JS and append to body so they always work
+(function () {
+  const panel = document.createElement('div');
+  panel.id = 'sun-control';
+  panel.style.cssText = 'position:fixed;top:12px;right:12px;padding:10px 14px;background:rgba(0,0,0,0.7);border-radius:8px;font-size:12px;color:#e0e0e0;z-index:9999;font-family:system-ui,sans-serif;';
+  const azLabel = document.createElement('label');
+  azLabel.style.display = 'block';
+  const azValueSpan = document.createElement('span');
+  azValueSpan.textContent = '45';
+  azLabel.appendChild(document.createTextNode('Sun azimuth '));
+  azLabel.appendChild(azValueSpan);
+  azLabel.appendChild(document.createTextNode('°'));
+  const azInput = document.createElement('input');
+  azInput.type = 'range';
+  azInput.min = '0';
+  azInput.max = '360';
+  azInput.value = '45';
+  azInput.style.width = '120px';
+  azInput.style.display = 'block';
+  const elLabel = document.createElement('label');
+  elLabel.style.display = 'block';
+  elLabel.style.marginTop = '8px';
+  const elValueSpan = document.createElement('span');
+  elValueSpan.textContent = '45';
+  elLabel.appendChild(document.createTextNode('Sun elevation '));
+  elLabel.appendChild(elValueSpan);
+  elLabel.appendChild(document.createTextNode('°'));
+  const elInput = document.createElement('input');
+  elInput.type = 'range';
+  elInput.min = '0';
+  elInput.max = '90';
+  elInput.value = '45';
+  elInput.style.width = '120px';
+  elInput.style.display = 'block';
+
+  function updateSun() {
+    const az = parseInt(azInput.value, 10);
+    const el = parseInt(elInput.value, 10);
+    azValueSpan.textContent = az;
+    elValueSpan.textContent = el;
+    light.setEulerAngles(el, az, 0);
+  }
+  azInput.addEventListener('input', updateSun);
+  elInput.addEventListener('input', updateSun);
+
+  panel.appendChild(azLabel);
+  panel.appendChild(azInput);
+  panel.appendChild(elLabel);
+  panel.appendChild(elInput);
+  document.body.appendChild(panel);
+})();
+
 // Default cube at origin (so we always see something)
 const defaultBox = new pc.Entity('Default Box');
 defaultBox.setPosition(0, 0, 0);
