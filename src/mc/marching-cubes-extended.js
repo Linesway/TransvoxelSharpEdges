@@ -25,6 +25,14 @@ function sampleField(ix, iy, iz, res, fieldFn) {
   return fieldFn(x, y, z);
 }
 
+/** Gradient of field at (x,y,z) by central differences. Same coord system as fieldFn (e.g. [0,1]^3). */
+function gradientAt(x, y, z, fieldFn, eps = 1e-6) {
+  const gx = (fieldFn(x + eps, y, z) - fieldFn(x - eps, y, z)) / (2 * eps);
+  const gy = (fieldFn(x, y + eps, z) - fieldFn(x, y - eps, z)) / (2 * eps);
+  const gz = (fieldFn(x, y, z + eps) - fieldFn(x, y, z - eps)) / (2 * eps);
+  return [gx, gy, gz];
+}
+
 function interpolate(p0, p1, v0, v1, iso) {
   const denom = v1 - v0;
   const t = Math.abs(denom) < 1e-9 ? 0.5 : (iso - v0) / denom;
@@ -134,13 +142,8 @@ export function runExtendedMarchingCubes(res, iso, fieldFn, options = {}) {
     const p1 = [i1 / res, j1 / res, k1 / res];
     const p = interpolate(p0, p1, v0, v1, iso);
 
-    const mi = Math.max(1, Math.min(res - 1, (i0 + i1) >> 1));
-    const mj = Math.max(1, Math.min(res - 1, (j0 + j1) >> 1));
-    const mk = Math.max(1, Math.min(res - 1, (k0 + k1) >> 1));
-    const h = 1 / res;
-    const gx = (sampleField(mi + 1, mj, mk, res, fieldFn) - sampleField(mi - 1, mj, mk, res, fieldFn)) / (2 * h);
-    const gy = (sampleField(mi, mj + 1, mk, res, fieldFn) - sampleField(mi, mj - 1, mk, res, fieldFn)) / (2 * h);
-    const gz = (sampleField(mi, mj, mk + 1, res, fieldFn) - sampleField(mi, mj, mk - 1, res, fieldFn)) / (2 * h);
+    // Normal at the actual intersection point (surfRecon uses directed_distance normal at _point)
+    const [gx, gy, gz] = gradientAt(p[0], p[1], p[2], fieldFn);
     const len = Math.sqrt(gx * gx + gy * gy + gz * gz) || 1;
     const nx = -gx / len, ny = -gy / len, nz = -gz / len;
 
