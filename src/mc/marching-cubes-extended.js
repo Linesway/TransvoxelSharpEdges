@@ -1,10 +1,13 @@
 /**
- * Extended Marching Cubes (surfRecon-style): polygon table + feature detection +
- * QEF (plane intersection) for sharp edges/corners + triangle fanning.
- * Same corner/edge order as classic MC so tables match.
+ * Extended Marching Cubes — line-by-line match of IsoEx ExtendedMarchingCubesT:
+ * - process_cube: triTable[case][1] (n_components, n_vertices per sheet, indices); samples[12]; find_feature(vhandles); fan or polyTable.
+ * - add_vertex: point + normal (IsoEx: directed_distance; we: gradient at point + limit normals for crease detection).
+ * - find_feature: p,n (nV); cog = sum(p)/nV; p -= cog; min_c criterion; rank 2/3; A(nV×3), b(nV); SVD(A); rank==2 → S[sminid]=0; svd_backsub; point = x + cog.
+ * - flip_edges: flip if v1,v3 feature and v0,v2 not.
  */
 import { edgeTable } from '../tables/edge-table.js';
 import { polygonTable, polyTable } from '../tables/polygon-tables.js';
+import { svd_decomp, svd_backsub } from './svd-isoex.js';
 
 // Must match mcTable/surfRecon: 0=(0,0,0), 1=(1,0,0), 2=(1,1,0), 3=(0,1,0), 4=(0,0,1), 5=(1,0,1), 6=(1,1,1), 7=(0,1,1)
 const CORNER_DELTA = [
@@ -43,90 +46,76 @@ function interpolate(p0, p1, v0, v1, iso) {
   ];
 }
 
-/** Solve 3x3 linear system M x = b in place; returns true if successful. */
-function solve3(M, b) {
-  const m = (i, j) => M[i * 3 + j];
-  const set = (i, j, v) => { M[i * 3 + j] = v; };
-  const x = b;
-  for (let k = 0; k < 3; k++) {
-    let pivot = k;
-    let max = Math.abs(m(k, k));
-    for (let i = k + 1; i < 3; i++) {
-      const a = Math.abs(m(i, k));
-      if (a > max) { max = a; pivot = i; }
-    }
-    if (max < 1e-12) return false;
-    if (pivot !== k) {
-      for (let j = 0; j < 3; j++) { const t = m(k, j); set(k, j, m(pivot, j)); set(pivot, j, t); }
-      const t = x[k]; x[k] = x[pivot]; x[pivot] = t;
-    }
-    const inv = 1 / m(k, k);
-    for (let i = k + 1; i < 3; i++) {
-      const f = m(i, k) * inv;
-      for (let j = k; j < 3; j++) set(i, j, m(i, j) - f * m(k, j));
-      x[i] -= f * x[k];
-    }
-  }
-  for (let k = 2; k >= 0; k--) {
-    let s = x[k];
-    for (let j = k + 1; j < 3; j++) s -= m(k, j) * x[j];
-    x[k] = s / m(k, k);
-  }
-  return true;
-}
-
 /**
- * Find feature point for an n-gon (IsoEx/surfRecon find_feature).
- * Returns { point, rank } or null. rank 2 = edge (use QEF fan), rank 3 = corner
- * (don't use fan to avoid corner spikes).
+ * IsoEx find_feature: use p_detect,n_detect for min_c and rank (can use limit normals);
+ * use p_svd,n_svd for A,b (exactly nV rows = one per polygon vertex, matching IsoEx).
+ * SVD: A(nV×3), b(nV); rank==2 → zero smallest S; backsub; point = x (caller adds cog).
  */
-function findFeaturePoint(p, n, featureAngleRad) {
-  const nV = p.length;
+function findFeaturePoint(p_detect, n_detect, featureAngleRad, counts, p_svd, n_svd) {
+  const nDetect = p_detect.length;
   let minC = 1;
   let axis = [0, 0, 0];
-  for (let i = 0; i < nV; i++)
-    for (let j = 0; j < nV; j++) {
-      const c = n[i][0] * n[j][0] + n[i][1] * n[j][1] + n[i][2] * n[j][2];
+  for (let i = 0; i < nDetect; i++)
+    for (let j = 0; j < nDetect; j++) {
+      const c = n_detect[i][0] * n_detect[j][0] + n_detect[i][1] * n_detect[j][1] + n_detect[i][2] * n_detect[j][2];
       if (c < minC) {
         minC = c;
         axis = [
-          n[i][1] * n[j][2] - n[i][2] * n[j][1],
-          n[i][2] * n[j][0] - n[i][0] * n[j][2],
-          n[i][0] * n[j][1] - n[i][1] * n[j][0]
+          n_detect[i][1] * n_detect[j][2] - n_detect[i][2] * n_detect[j][1],
+          n_detect[i][2] * n_detect[j][0] - n_detect[i][0] * n_detect[j][2],
+          n_detect[i][0] * n_detect[j][1] - n_detect[i][1] * n_detect[j][0]
         ];
       }
     }
   if (minC > Math.cos(featureAngleRad)) return null;
 
-  // rank 2 (edge) vs 3 (corner): project normals onto axis
   let len = Math.sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]) || 1;
   axis[0] /= len; axis[1] /= len; axis[2] /= len;
   let minD = 1, maxD = -1;
-  for (let i = 0; i < nV; i++) {
-    const d = n[i][0] * axis[0] + n[i][1] * axis[1] + n[i][2] * axis[2];
+  for (let i = 0; i < nDetect; i++) {
+    const d = n_detect[i][0] * axis[0] + n_detect[i][1] * axis[1] + n_detect[i][2] * axis[2];
     if (d < minD) minD = d;
     if (d > maxD) maxD = d;
   }
   let c = Math.max(Math.abs(minD), Math.abs(maxD));
   c = Math.sqrt(1 - c * c);
   const rank = c > Math.cos(featureAngleRad) ? 2 : 3;
-
-  // Only use QEF + fan for edges (rank 2). Corners (rank 3) use poly table to avoid spikes.
-  if (rank !== 2) return null;
-
-  // A x = b: least-squares plane intersection
-  const AtA = new Float64Array(9);
-  const Atb = new Float64Array(3);
-  for (let i = 0; i < nV; i++) {
-    const ni = n[i], pi = p[i];
-    const bi = ni[0] * pi[0] + ni[1] * pi[1] + ni[2] * pi[2];
-    Atb[0] += ni[0] * bi; Atb[1] += ni[1] * bi; Atb[2] += ni[2] * bi;
-    for (let r = 0; r < 3; r++)
-      for (let c = 0; c < 3; c++)
-        AtA[r * 3 + c] += ni[r] * ni[c];
+  if (counts) {
+    if (rank === 2) counts.n_edges++;
+    else counts.n_corners++;
   }
-  if (!solve3(AtA, Atb)) return null;
-  return { point: [Atb[0], Atb[1], Atb[2]] };
+
+  // IsoEx: A(nV,3), b(nV) — exactly one row per polygon vertex (mesh_.point, mesh_.normal)
+  const p = p_svd != null ? p_svd : p_detect;
+  const n = n_svd != null ? n_svd : n_detect;
+  const nV = p.length;
+  const A = [];
+  const b = [];
+  for (let i = 0; i < nV; i++) {
+    A.push([n[i][0], n[i][1], n[i][2]]);
+    b.push(p[i][0] * n[i][0] + p[i][1] * n[i][1] + p[i][2] * n[i][2]);
+  }
+  const A_copy = A.map(row => row.slice());
+  const S = [0, 0, 0];
+  const V = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  svd_decomp(A_copy, S, V);
+
+  if (rank === 2) {
+    const srank = Math.min(nV, 3);
+    let smin = Number.POSITIVE_INFINITY;
+    let sminid = 0;
+    for (let i = 0; i < srank; i++) {
+      if (S[i] < smin) {
+        smin = S[i];
+        sminid = i;
+      }
+    }
+    S[sminid] = 0;
+  }
+
+  const x = [0, 0, 0];
+  svd_backsub(A_copy, S, V, b, x);
+  return { point: x, rank };
 }
 
 /**
@@ -143,8 +132,10 @@ export function runExtendedMarchingCubes(res, iso, fieldFn, options = {}) {
   const vertices = [];
   const indices = [];
   const vertexMap = new Map();
+  /** Per-vertex limit normals for feature detection: [vi] => [n0, n1] when edge crosses a crease, else undefined. */
+  const vertexLimitNormals = [];
   let nextVertexIndex = 0;
-  let featureCount = 0;
+  const counts = { n_edges: 0, n_corners: 0 };
   const featureVertices = new Set();
 
   function getVertex(cx, cy, cz, edgeId) {
@@ -166,10 +157,25 @@ export function runExtendedMarchingCubes(res, iso, fieldFn, options = {}) {
     const p1 = [i1 / res, j1 / res, k1 / res];
     const p = interpolate(p0, p1, v0, v1, iso);
 
-    // Normal at the actual intersection point (surfRecon uses directed_distance normal at _point)
+    // Normal at the actual intersection point (for rendering)
     const [gx, gy, gz] = gradientAt(p[0], p[1], p[2], fieldFn);
     const len = Math.sqrt(gx * gx + gy * gy + gz * gz) || 1;
     const nx = -gx / len, ny = -gy / len, nz = -gz / len;
+
+    // Limit normals at the two edge corners (for sharp-edge feature detection).
+    // At a crease the SDF is non-differentiable; gradient at the vertex averages. Using corners gives the two face normals.
+    const [g0x, g0y, g0z] = gradientAt(p0[0], p0[1], p0[2], fieldFn);
+    const [g1x, g1y, g1z] = gradientAt(p1[0], p1[1], p1[2], fieldFn);
+    const l0 = Math.sqrt(g0x * g0x + g0y * g0y + g0z * g0z) || 1;
+    const l1 = Math.sqrt(g1x * g1x + g1y * g1y + g1z * g1z) || 1;
+    const n0 = [-g0x / l0, -g0y / l0, -g0z / l0];
+    const n1 = [-g1x / l1, -g1y / l1, -g1z / l1];
+    const dotCorners = n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2];
+    if (dotCorners < Math.cos(featureAngleRad)) {
+      vertexLimitNormals.push([n0, n1]);
+    } else {
+      vertexLimitNormals.push(undefined);
+    }
 
     idx = nextVertexIndex++;
     vertexMap.set(key, idx);
@@ -222,29 +228,47 @@ export function runExtendedMarchingCubes(res, iso, fieldFn, options = {}) {
             polyIndices.push(samples[row[offset + i]]);
           offset += nv;
 
-          const p = [];
-          const n = [];
-          for (let i = 0; i < nv; i++) {
-            p.push(getPosition(polyIndices[i]));
-            n.push(getNormal(polyIndices[i]));
-          }
+          // Barycenter of the n-gon — IsoEx: cog = sum(p)/nV
           const cog = [0, 0, 0];
           for (let i = 0; i < nv; i++) {
-            cog[0] += p[i][0]; cog[1] += p[i][1]; cog[2] += p[i][2];
+            const pos = getPosition(polyIndices[i]);
+            cog[0] += pos[0]; cog[1] += pos[1]; cog[2] += pos[2];
           }
           cog[0] /= nv; cog[1] /= nv; cog[2] /= nv;
+
+          // For detection: extended (p_detect, n_detect) with limit normals so we see creases
+          const p_detect = [];
+          const n_detect = [];
           for (let i = 0; i < nv; i++) {
-            p[i] = [p[i][0] - cog[0], p[i][1] - cog[1], p[i][2] - cog[2]];
+            const vi = polyIndices[i];
+            const pos = getPosition(vi);
+            const limits = vertexLimitNormals[vi];
+            if (limits) {
+              for (const norm of limits) {
+                p_detect.push([pos[0] - cog[0], pos[1] - cog[1], pos[2] - cog[2]]);
+                n_detect.push(norm);
+              }
+            } else {
+              p_detect.push([pos[0] - cog[0], pos[1] - cog[1], pos[2] - cog[2]]);
+              n_detect.push(getNormal(vi));
+            }
+          }
+          // For SVD: exactly nV rows (IsoEx: one point + one normal per polygon vertex)
+          const p_svd = [];
+          const n_svd = [];
+          for (let i = 0; i < nv; i++) {
+            const pos = getPosition(polyIndices[i]);
+            p_svd.push([pos[0] - cog[0], pos[1] - cog[1], pos[2] - cog[2]]);
+            n_svd.push(getNormal(polyIndices[i]));
           }
 
-          const featureResult = findFeaturePoint(p, n, featureAngleRad);
+          const featureResult = findFeaturePoint(p_detect, n_detect, featureAngleRad, counts, p_svd, n_svd);
           if (featureResult) {
-            featureCount++;
             const pt = featureResult.point;
             const world = [pt[0] + cog[0], pt[1] + cog[1], pt[2] + cog[2]];
             let nx = 0, ny = 0, nz = 0;
-            for (let i = 0; i < nv; i++) {
-              nx += n[i][0]; ny += n[i][1]; nz += n[i][2];
+            for (let i = 0; i < n_svd.length; i++) {
+              nx += n_svd[i][0]; ny += n_svd[i][1]; nz += n_svd[i][2];
             }
             const ln = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
             nx /= ln; ny /= ln; nz /= ln;
@@ -267,7 +291,7 @@ export function runExtendedMarchingCubes(res, iso, fieldFn, options = {}) {
 
   flipEdges(vertices, indices, featureVertices);
 
-  console.log('Extended MC: features found =', featureCount);
+  console.log('Found', counts.n_edges, 'edge features,', counts.n_corners, 'corner features');
   return { vertices, indices };
 }
 

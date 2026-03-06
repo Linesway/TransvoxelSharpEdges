@@ -6,6 +6,7 @@ import * as pc from 'playcanvas';
 import { insidePositive, cubeSDF } from './noise/sdf.js';
 import { runMarchingCubes } from './mc/marching-cubes.js';
 import { runExtendedMarchingCubes } from './mc/marching-cubes-extended.js';
+import { runTransvoxelInterior } from './mc/transvoxel.js';
 import { createMeshFromMCResult } from './mc/mc-mesh.js';
 import { createFpsCamera } from './camera/camera.js';
 
@@ -91,7 +92,35 @@ if (mesh) {
   app.root.addChild(mcEntity);
 }
 
-// Extended marching cubes (polygon table) — same SDF, blue cube on the left
+// Transvoxel interior (regular cells) — same SDF, orange cube on the left
+const transvoxelResult = runTransvoxelInterior(mcRes, iso, fieldFn);
+const tvVert = transvoxelResult.vertices.length / 6;
+const tvTri = transvoxelResult.indices.length / 3;
+console.log('Transvoxel result:', tvVert, 'vertices,', tvTri, 'triangles');
+
+const transvoxelMesh = createMeshFromMCResult(app.graphicsDevice, transvoxelResult, { center: true });
+if (transvoxelMesh) {
+  let tvMaterial;
+  try {
+    tvMaterial = new pc.StandardMaterial();
+    tvMaterial.diffuse = new pc.Color(0.95, 0.5, 0.15);
+  } catch (_) {
+    tvMaterial = defaultBox.render.material.clone();
+    tvMaterial.diffuse = new pc.Color(0.95, 0.5, 0.15);
+  }
+  tvMaterial.cull = pc.CULLFACE_NONE;
+  tvMaterial.update();
+
+  const tvInstance = new pc.MeshInstance(transvoxelMesh, tvMaterial);
+  const tvEntity = new pc.Entity('Transvoxel Cube');
+  tvEntity.setPosition(-4.5, 0, 0);
+  tvEntity.addComponent('render');
+  tvEntity.render.type = 'asset';
+  tvEntity.render.meshInstances = [tvInstance];
+  app.root.addChild(tvEntity);
+}
+
+// Extended marching cubes (polygon table) — same SDF, blue cube
 const extendedResult = runExtendedMarchingCubes(mcRes, iso, fieldFn);
 const extendedVert = extendedResult.vertices.length / 6;
 const extendedTri = extendedResult.indices.length / 3;
