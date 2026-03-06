@@ -1,11 +1,16 @@
 /**
- * Extended Marching Cubes: polygon table + polyTable n-gon triangulation.
- * Samples a scalar field on a regular grid, outputs triangles (positions + normals).
+ * Extended Marching Cubes (surfRecon-style): polygon table + feature detection +
+ * QEF (plane intersection) for sharp edges/corners + triangle fanning.
+ * Same corner/edge order as classic MC so tables match.
  */
 import { edgeTable } from '../tables/edge-table.js';
 import { polygonTable, polyTable } from '../tables/polygon-tables.js';
 
-// Cube corners: 0..7. Edge 0 = 0-1, 1 = 1-2, 2 = 3-2, 3 = 0-3, 4 = 4-5, 5 = 5-6, 6 = 7-6, 7 = 4-7, 8 = 0-4, 9 = 1-5, 10 = 2-6, 11 = 3-7.
+// Must match mcTable/surfRecon: 0=(0,0,0), 1=(1,0,0), 2=(1,1,0), 3=(0,1,0), 4=(0,0,1), 5=(1,0,1), 6=(1,1,1), 7=(0,1,1)
+const CORNER_DELTA = [
+  [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+  [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]
+];
 const EDGE_CORNERS = [
   [0, 1], [1, 2], [3, 2], [0, 3], [4, 5], [5, 6], [7, 6], [4, 7],
   [0, 4], [1, 5], [2, 6], [3, 7]
@@ -15,17 +20,14 @@ function edgeKey(i, j) {
   return i < j ? `${i},${j}` : `${j},${i}`;
 }
 
-/**
- * Sample scalar field at grid point (ix, iy, iz). Grid is [0, res]^3, map to [0,1]^3.
- */
 function sampleField(ix, iy, iz, res, fieldFn) {
   const x = ix / res, y = iy / res, z = iz / res;
   return fieldFn(x, y, z);
 }
 
-/** Linear interpolation along edge: vertex where value = iso. */
 function interpolate(p0, p1, v0, v1, iso) {
-  const t = (iso - v0) / (v1 - v0);
+  const denom = v1 - v0;
+  const t = Math.abs(denom) < 1e-9 ? 0.5 : (iso - v0) / denom;
   return [
     p0[0] + t * (p1[0] - p0[0]),
     p0[1] + t * (p1[1] - p0[1]),
@@ -33,16 +35,92 @@ function interpolate(p0, p1, v0, v1, iso) {
   ];
 }
 
-export function runExtendedMarchingCubes(res, iso, fieldFn) {
-  const vertices = [];  // [x,y,z, nx,ny,nz] per vertex
-  const indices = [];    // triangle indices into vertices (each 3 = one triangle)
-  const vertexMap = new Map(); // edgeKey -> vertex index
+/** Solve 3x3 linear system M x = b in place; returns true if successful. */
+function solve3(M, b) {
+  const m = (i, j) => M[i * 3 + j];
+  const set = (i, j, v) => { M[i * 3 + j] = v; };
+  const x = b;
+  for (let k = 0; k < 3; k++) {
+    let pivot = k;
+    let max = Math.abs(m(k, k));
+    for (let i = k + 1; i < 3; i++) {
+      const a = Math.abs(m(i, k));
+      if (a > max) { max = a; pivot = i; }
+    }
+    if (max < 1e-12) return false;
+    if (pivot !== k) {
+      for (let j = 0; j < 3; j++) { const t = m(k, j); set(k, j, m(pivot, j)); set(pivot, j, t); }
+      const t = x[k]; x[k] = x[pivot]; x[pivot] = t;
+    }
+    const inv = 1 / m(k, k);
+    for (let i = k + 1; i < 3; i++) {
+      const f = m(i, k) * inv;
+      for (let j = k; j < 3; j++) set(i, j, m(i, j) - f * m(k, j));
+      x[i] -= f * x[k];
+    }
+  }
+  for (let k = 2; k >= 0; k--) {
+    let s = x[k];
+    for (let j = k + 1; j < 3; j++) s -= m(k, j) * x[j];
+    x[k] = s / m(k, k);
+  }
+  return true;
+}
+
+/**
+ * Find feature point for an n-gon (surfRecon find_feature).
+ * p[], n[] = positions and normals (centered). If normals span a sharp angle, solve
+ * least-squares plane intersection (QEF) and return [x,y,z]; else return null.
+ */
+function findFeaturePoint(p, n, featureAngleRad) {
+  const nV = p.length;
+  let minC = 1;
+  for (let i = 0; i < nV; i++)
+    for (let j = 0; j < nV; j++) {
+      const c = n[i][0] * n[j][0] + n[i][1] * n[j][1] + n[i][2] * n[j][2];
+      if (c < minC) minC = c;
+    }
+  if (minC > Math.cos(featureAngleRad)) return null;
+
+  // A x = b: each row i is n_i · x = n_i · p_i  =>  A = n (nV x 3), b[i] = dot(n[i], p[i])
+  // Least squares: A^T A x = A^T b
+  const AtA = new Float64Array(9);
+  const Atb = new Float64Array(3);
+  for (let i = 0; i < nV; i++) {
+    const ni = n[i], pi = p[i];
+    const bi = ni[0] * pi[0] + ni[1] * pi[1] + ni[2] * pi[2];
+    Atb[0] += ni[0] * bi; Atb[1] += ni[1] * bi; Atb[2] += ni[2] * bi;
+    for (let r = 0; r < 3; r++)
+      for (let c = 0; c < 3; c++)
+        AtA[r * 3 + c] += ni[r] * ni[c];
+  }
+  if (!solve3(AtA, Atb)) return null;
+  return [Atb[0], Atb[1], Atb[2]];
+}
+
+/**
+ * Run extended marching cubes with feature detection and triangle fanning.
+ * @param {number} res - grid resolution
+ * @param {number} iso - isosurface value (inside where field > iso)
+ * @param {(x,y,z)=>number} fieldFn - scalar field
+ * @param {{ featureAngleDeg?: number }} options - feature angle in degrees (default 30)
+ */
+export function runExtendedMarchingCubes(res, iso, fieldFn, options = {}) {
+  const featureAngleDeg = options.featureAngleDeg ?? 30;
+  const featureAngleRad = (featureAngleDeg * Math.PI) / 180;
+
+  const vertices = [];
+  const indices = [];
+  const vertexMap = new Map();
   let nextVertexIndex = 0;
+  let featureCount = 0;
 
   function getVertex(cx, cy, cz, edgeId) {
     const [c0, c1] = EDGE_CORNERS[edgeId];
-    const i0 = cx + (c0 & 1), j0 = cy + ((c0 >> 1) & 1), k0 = cz + ((c0 >> 2) & 1);
-    const i1 = cx + (c1 & 1), j1 = cy + ((c1 >> 1) & 1), k1 = cz + ((c1 >> 2) & 1);
+    const [di0, dj0, dk0] = CORNER_DELTA[c0];
+    const [di1, dj1, dk1] = CORNER_DELTA[c1];
+    const i0 = cx + di0, j0 = cy + dj0, k0 = cz + dk0;
+    const i1 = cx + di1, j1 = cy + dj1, k1 = cz + dk1;
     const key = edgeKey(
       i0 * (res + 1) * (res + 1) + j0 * (res + 1) + k0,
       i1 * (res + 1) * (res + 1) + j1 * (res + 1) + k1
@@ -56,10 +134,9 @@ export function runExtendedMarchingCubes(res, iso, fieldFn) {
     const p1 = [i1 / res, j1 / res, k1 / res];
     const p = interpolate(p0, p1, v0, v1, iso);
 
-    // Normal from gradient at edge midpoint (clamp to grid)
-    const mi = Math.max(1, Math.min(res - 1, Math.floor((i0 + i1) / 2)));
-    const mj = Math.max(1, Math.min(res - 1, Math.floor((j0 + j1) / 2)));
-    const mk = Math.max(1, Math.min(res - 1, Math.floor((k0 + k1) / 2)));
+    const mi = Math.max(1, Math.min(res - 1, (i0 + i1) >> 1));
+    const mj = Math.max(1, Math.min(res - 1, (j0 + j1) >> 1));
+    const mk = Math.max(1, Math.min(res - 1, (k0 + k1) >> 1));
     const h = 1 / res;
     const gx = (sampleField(mi + 1, mj, mk, res, fieldFn) - sampleField(mi - 1, mj, mk, res, fieldFn)) / (2 * h);
     const gy = (sampleField(mi, mj + 1, mk, res, fieldFn) - sampleField(mi, mj - 1, mk, res, fieldFn)) / (2 * h);
@@ -73,13 +150,26 @@ export function runExtendedMarchingCubes(res, iso, fieldFn) {
     return idx;
   }
 
+  function getPosition(vi) {
+    return [vertices[vi * 6], vertices[vi * 6 + 1], vertices[vi * 6 + 2]];
+  }
+  function getNormal(vi) {
+    return [vertices[vi * 6 + 3], vertices[vi * 6 + 4], vertices[vi * 6 + 5]];
+  }
+
+  function addFeatureVertex(pos, norm) {
+    const idx = nextVertexIndex++;
+    vertices.push(pos[0], pos[1], pos[2], norm[0], norm[1], norm[2]);
+    return idx;
+  }
+
   for (let cx = 0; cx < res; cx++) {
     for (let cy = 0; cy < res; cy++) {
       for (let cz = 0; cz < res; cz++) {
         const values = [];
         for (let c = 0; c < 8; c++) {
-          const i = cx + (c & 1), j = cy + ((c >> 1) & 1), k = cz + ((c >> 2) & 1);
-          values[c] = sampleField(i, j, k, res, fieldFn);
+          const [di, dj, dk] = CORNER_DELTA[c];
+          values[c] = sampleField(cx + di, cy + dj, cz + dk, res, fieldFn);
         }
         let cubetype = 0;
         for (let c = 0; c < 8; c++)
@@ -87,7 +177,7 @@ export function runExtendedMarchingCubes(res, iso, fieldFn) {
         if (cubetype === 0 || cubetype === 255) continue;
 
         const edgeMask = edgeTable[cubetype];
-        const samples = []; // samples[edgeId] = vertex index
+        const samples = [];
         for (let e = 0; e < 12; e++) {
           if (edgeMask & (1 << e))
             samples[e] = getVertex(cx, cy, cz, e);
@@ -104,17 +194,48 @@ export function runExtendedMarchingCubes(res, iso, fieldFn) {
             polyIndices.push(samples[row[offset + i]]);
           offset += nv;
 
-          const tri = polyTable[nv];
-          for (let j = 0; tri[j] !== -1; j += 3)
-            indices.push(
-              polyIndices[tri[j]],
-              polyIndices[tri[j + 1]],
-              polyIndices[tri[j + 2]]
-            );
+          const p = [];
+          const n = [];
+          for (let i = 0; i < nv; i++) {
+            p.push(getPosition(polyIndices[i]));
+            n.push(getNormal(polyIndices[i]));
+          }
+          const cog = [0, 0, 0];
+          for (let i = 0; i < nv; i++) {
+            cog[0] += p[i][0]; cog[1] += p[i][1]; cog[2] += p[i][2];
+          }
+          cog[0] /= nv; cog[1] /= nv; cog[2] /= nv;
+          for (let i = 0; i < nv; i++) {
+            p[i] = [p[i][0] - cog[0], p[i][1] - cog[1], p[i][2] - cog[2]];
+          }
+
+          const featurePoint = findFeaturePoint(p, n, featureAngleRad);
+          if (featurePoint) {
+            featureCount++;
+            const world = [featurePoint[0] + cog[0], featurePoint[1] + cog[1], featurePoint[2] + cog[2]];
+            let nx = 0, ny = 0, nz = 0;
+            for (let i = 0; i < nv; i++) {
+              nx += n[i][0]; ny += n[i][1]; nz += n[i][2];
+            }
+            const ln = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+            nx /= ln; ny /= ln; nz /= ln;
+            const fv = addFeatureVertex(world, [nx, ny, nz]);
+            for (let j = 0; j < nv; j++)
+              indices.push(polyIndices[j], polyIndices[(j + 1) % nv], fv);
+          } else {
+            const tri = polyTable[nv];
+            for (let j = 0; tri[j] !== -1; j += 3)
+              indices.push(
+                polyIndices[tri[j]],
+                polyIndices[tri[j + 1]],
+                polyIndices[tri[j + 2]]
+              );
+          }
         }
       }
     }
   }
 
+  console.log('Extended MC: features found =', featureCount);
   return { vertices, indices };
 }

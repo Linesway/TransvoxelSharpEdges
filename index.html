@@ -47,5 +47,13 @@
   </div>
   <p class="hint">Look: drag mouse · Move: W/S forward/back · A/D strafe · Q/E up/down</p>
   <script type="module" src="./src/main.js"></script>
+  <script>
+    window.addEventListener('error', function(e) {
+      console.error('Page error:', e.message, e.filename, e.lineno, e.colno, e.error);
+    });
+    window.addEventListener('unhandledrejection', function(e) {
+      console.error('Unhandled promise rejection:', e.reason);
+    });
+  </script>
 </body>
 </html>

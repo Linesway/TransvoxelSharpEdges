@@ -3,10 +3,11 @@
  * Uses classic marching cubes (tri table) for the cube SDF.
  */
 import * as pc from 'playcanvas';
-import { insidePositive, cubeSDF } from './sdf.js';
+import { insidePositive, cubeSDF } from './noise/sdf.js';
 import { runMarchingCubes } from './mc/marching-cubes.js';
+import { runExtendedMarchingCubes } from './mc/marching-cubes-extended.js';
 import { createMeshFromMCResult } from './mc/mc-mesh.js';
-import { createFpsCamera } from './camera.js';
+import { createFpsCamera } from './camera/camera.js';
 
 const canvas = document.getElementById('application');
 const app = new pc.Application(canvas, {
@@ -88,4 +89,32 @@ if (mesh) {
   mcEntity.render.type = 'asset';
   mcEntity.render.meshInstances = [meshInstance];
   app.root.addChild(mcEntity);
+}
+
+// Extended marching cubes (polygon table) — same SDF, blue cube on the left
+const extendedResult = runExtendedMarchingCubes(mcRes, iso, fieldFn);
+const extendedVert = extendedResult.vertices.length / 6;
+const extendedTri = extendedResult.indices.length / 3;
+console.log('Extended MC result:', extendedVert, 'vertices,', extendedTri, 'triangles');
+
+const extendedMesh = createMeshFromMCResult(app.graphicsDevice, extendedResult, { center: true });
+if (extendedMesh) {
+  let extendedMaterial;
+  try {
+    extendedMaterial = new pc.StandardMaterial();
+    extendedMaterial.diffuse = new pc.Color(0.2, 0.5, 0.95);
+  } catch (_) {
+    extendedMaterial = defaultBox.render.material.clone();
+    extendedMaterial.diffuse = new pc.Color(0.2, 0.5, 0.95);
+  }
+  extendedMaterial.cull = pc.CULLFACE_NONE;
+  extendedMaterial.update();
+
+  const extendedInstance = new pc.MeshInstance(extendedMesh, extendedMaterial);
+  const extendedEntity = new pc.Entity('MC Extended Cube');
+  extendedEntity.setPosition(-1.5, 0, 0);
+  extendedEntity.addComponent('render');
+  extendedEntity.render.type = 'asset';
+  extendedEntity.render.meshInstances = [extendedInstance];
+  app.root.addChild(extendedEntity);
 }
