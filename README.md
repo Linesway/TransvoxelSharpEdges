@@ -2,6 +2,8 @@
 
 PlayCanvas viewer: FPS camera + marching-cubes SDF mesh. No WebGPU; runs in any modern browser.
 
+image.png
+
 ## Run
 
 1. **Double‑click `run-server.bat`** (in this folder).
