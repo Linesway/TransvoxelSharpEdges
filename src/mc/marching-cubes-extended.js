@@ -76,22 +76,45 @@ function solve3(M, b) {
 }
 
 /**
- * Find feature point for an n-gon (surfRecon find_feature).
- * p[], n[] = positions and normals (centered). If normals span a sharp angle, solve
- * least-squares plane intersection (QEF) and return [x,y,z]; else return null.
+ * Find feature point for an n-gon (IsoEx/surfRecon find_feature).
+ * Returns { point, rank } or null. rank 2 = edge (use QEF fan), rank 3 = corner
+ * (don't use fan to avoid corner spikes).
  */
 function findFeaturePoint(p, n, featureAngleRad) {
   const nV = p.length;
   let minC = 1;
+  let axis = [0, 0, 0];
   for (let i = 0; i < nV; i++)
     for (let j = 0; j < nV; j++) {
       const c = n[i][0] * n[j][0] + n[i][1] * n[j][1] + n[i][2] * n[j][2];
-      if (c < minC) minC = c;
+      if (c < minC) {
+        minC = c;
+        axis = [
+          n[i][1] * n[j][2] - n[i][2] * n[j][1],
+          n[i][2] * n[j][0] - n[i][0] * n[j][2],
+          n[i][0] * n[j][1] - n[i][1] * n[j][0]
+        ];
+      }
     }
   if (minC > Math.cos(featureAngleRad)) return null;
 
-  // A x = b: each row i is n_i · x = n_i · p_i  =>  A = n (nV x 3), b[i] = dot(n[i], p[i])
-  // Least squares: A^T A x = A^T b
+  // rank 2 (edge) vs 3 (corner): project normals onto axis
+  let len = Math.sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]) || 1;
+  axis[0] /= len; axis[1] /= len; axis[2] /= len;
+  let minD = 1, maxD = -1;
+  for (let i = 0; i < nV; i++) {
+    const d = n[i][0] * axis[0] + n[i][1] * axis[1] + n[i][2] * axis[2];
+    if (d < minD) minD = d;
+    if (d > maxD) maxD = d;
+  }
+  let c = Math.max(Math.abs(minD), Math.abs(maxD));
+  c = Math.sqrt(1 - c * c);
+  const rank = c > Math.cos(featureAngleRad) ? 2 : 3;
+
+  // Only use QEF + fan for edges (rank 2). Corners (rank 3) use poly table to avoid spikes.
+  if (rank !== 2) return null;
+
+  // A x = b: least-squares plane intersection
   const AtA = new Float64Array(9);
   const Atb = new Float64Array(3);
   for (let i = 0; i < nV; i++) {
@@ -103,7 +126,7 @@ function findFeaturePoint(p, n, featureAngleRad) {
         AtA[r * 3 + c] += ni[r] * ni[c];
   }
   if (!solve3(AtA, Atb)) return null;
-  return [Atb[0], Atb[1], Atb[2]];
+  return { point: [Atb[0], Atb[1], Atb[2]] };
 }
 
 /**
@@ -122,6 +145,7 @@ export function runExtendedMarchingCubes(res, iso, fieldFn, options = {}) {
   const vertexMap = new Map();
   let nextVertexIndex = 0;
   let featureCount = 0;
+  const featureVertices = new Set();
 
   function getVertex(cx, cy, cz, edgeId) {
     const [c0, c1] = EDGE_CORNERS[edgeId];
@@ -163,6 +187,7 @@ export function runExtendedMarchingCubes(res, iso, fieldFn, options = {}) {
   function addFeatureVertex(pos, norm) {
     const idx = nextVertexIndex++;
     vertices.push(pos[0], pos[1], pos[2], norm[0], norm[1], norm[2]);
+    featureVertices.add(idx);
     return idx;
   }
 
@@ -212,10 +237,11 @@ export function runExtendedMarchingCubes(res, iso, fieldFn, options = {}) {
             p[i] = [p[i][0] - cog[0], p[i][1] - cog[1], p[i][2] - cog[2]];
           }
 
-          const featurePoint = findFeaturePoint(p, n, featureAngleRad);
-          if (featurePoint) {
+          const featureResult = findFeaturePoint(p, n, featureAngleRad);
+          if (featureResult) {
             featureCount++;
-            const world = [featurePoint[0] + cog[0], featurePoint[1] + cog[1], featurePoint[2] + cog[2]];
+            const pt = featureResult.point;
+            const world = [pt[0] + cog[0], pt[1] + cog[1], pt[2] + cog[2]];
             let nx = 0, ny = 0, nz = 0;
             for (let i = 0; i < nv; i++) {
               nx += n[i][0]; ny += n[i][1]; nz += n[i][2];
@@ -239,6 +265,61 @@ export function runExtendedMarchingCubes(res, iso, fieldFn, options = {}) {
     }
   }
 
+  flipEdges(vertices, indices, featureVertices);
+
   console.log('Extended MC: features found =', featureCount);
   return { vertices, indices };
+}
+
+/** Get position of vertex vi from flat vertices [x,y,z,nx,ny,nz,...]. */
+function getPos(vertices, vi) {
+  return [vertices[vi * 6], vertices[vi * 6 + 1], vertices[vi * 6 + 2]];
+}
+
+/** Triangle area (twice; positive if CCW). */
+function triArea2(vertices, a, b, c) {
+  const p0 = getPos(vertices, a), p1 = getPos(vertices, b), p2 = getPos(vertices, c);
+  const ux = p1[0] - p0[0], uy = p1[1] - p0[1], uz = p1[2] - p0[2];
+  const vx = p2[0] - p0[0], vy = p2[1] - p0[1], vz = p2[2] - p0[2];
+  const cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+  return Math.sqrt(cx * cx + cy * cy + cz * cz);
+}
+
+/**
+ * surfRecon/IsoEx-style edge flip: flip so the new edge connects the two feature
+ * vertices. Only flip when is_flip_ok (opposite vertices not already connected)
+ * and new triangles have positive area (avoids corner spikes).
+ */
+function flipEdges(vertices, indices, featureVertices) {
+  const key = (a, b) => (a < b ? `${a},${b}` : `${b},${a}`);
+  const edgeToTris = new Map();
+  for (let i = 0; i < indices.length; i += 3) {
+    const a = indices[i], b = indices[i + 1], c = indices[i + 2];
+    for (const [u, v, w] of [[a, b, c], [b, c, a], [c, a, b]]) {
+      const e = key(u, v);
+      if (!edgeToTris.has(e)) edgeToTris.set(e, []);
+      edgeToTris.get(e).push({ tri: i, u, v, opp: w });
+    }
+  }
+  const minArea2 = 1e-14;
+  let flips = 0;
+  for (const [edgeKeyStr, list] of edgeToTris) {
+    if (list.length !== 2) continue;
+    const [t0, t1] = list;
+    const edgeA = t0.u, edgeB = t0.v, opp0 = t0.opp, opp1 = t1.opp;
+    if (!featureVertices.has(opp0) || !featureVertices.has(opp1)) continue;
+    if (featureVertices.has(edgeA) || featureVertices.has(edgeB)) continue;
+    // is_flip_ok: opposite vertices must not already be connected (avoids corner spikes)
+    const newEdgeKey = key(opp0, opp1);
+    if (newEdgeKey !== edgeKeyStr && edgeToTris.has(newEdgeKey)) continue;
+    // Geometric check: new triangles must have positive area
+    const area1 = triArea2(vertices, edgeA, opp0, opp1);
+    const area2 = triArea2(vertices, edgeB, opp1, opp0);
+    if (area1 < minArea2 || area2 < minArea2) continue;
+    const i0 = t0.tri, i1 = t1.tri;
+    indices[i0] = edgeA; indices[i0 + 1] = opp0; indices[i0 + 2] = opp1;
+    indices[i1] = edgeB; indices[i1 + 1] = opp1; indices[i1 + 2] = opp0;
+    flips++;
+  }
+  if (flips > 0) console.log('Extended MC: edge flips =', flips);
 }
