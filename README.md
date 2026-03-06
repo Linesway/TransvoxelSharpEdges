@@ -2,7 +2,7 @@
 
 PlayCanvas viewer: FPS camera + marching-cubes SDF mesh. No WebGPU; runs in any modern browser.
 
-image.png
+![Extended marching cubes: sharp cube (blue) and classic MC cube (green)](screenshots/Screenshot%202026-03-05%20231635.png)
 
 ## Run
 
