@@ -5,9 +5,8 @@
  * - places feature vertices via IsoEx-style SVD solve
  * - triangulates via fan around feature point or fallback poly triangulation
  */
-import { regularVertexData } from '../tables/transvoxel-regular-tables.js';
-import { regularCellPolyTable } from '../tables/transvoxel-regular-poly-table.js';
-import { polyTable } from '../tables/polygon-tables.js';
+import { regularVertexData } from '../tables/transvoxel-tables.js';
+import { regularCellPolyTable, polyTable } from '../tables/transvoxel-extended-tables.js';
 import { svd_decomp, svd_backsub } from '../math/svd-isoex.js';
 
 // C4 / Transvoxel corner convention.

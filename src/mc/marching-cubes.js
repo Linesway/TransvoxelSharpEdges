@@ -3,8 +3,7 @@
  * Grid: cells (cx, cy, cz), 0 <= cx,cy,cz < res. Corners at integer grid points 0..res.
  * Convention: value > iso = inside (same as surfRecon).
  */
-import { edgeTable } from '../tables/edge-table.js';
-import { triTable } from '../tables/tri-table.js';
+import { edgeTable, triTable } from '../tables/mc-tables.js';
 
 // Cube corner positions relative to cell (cx, cy, cz). Must match mcTable/surfRecon grid order.
 // grid.cpp offsets: 0->(0,0,0), 1->(1,0,0), 2->(1,1,0), 3->(0,1,0), 4->(0,0,1), 5->(1,0,1), 6->(1,1,1), 7->(0,1,1)

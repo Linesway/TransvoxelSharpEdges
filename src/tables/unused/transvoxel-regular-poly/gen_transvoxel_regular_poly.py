@@ -1,0 +1,132 @@
+"""Generate regularCellPolyTable and write into transvoxel-extended-tables.js. Run from src/tables/unused/transvoxel-regular-poly."""
+import json
+import os
+
+# From transvoxel-tables.js
+REGULAR_CELL_CLASS = [
+  0x00, 0x01, 0x01, 0x03, 0x01, 0x03, 0x02, 0x04, 0x01, 0x02, 0x03, 0x04, 0x03, 0x04, 0x04, 0x03,
+  0x01, 0x03, 0x02, 0x04, 0x02, 0x04, 0x06, 0x0C, 0x02, 0x05, 0x05, 0x0B, 0x05, 0x0A, 0x07, 0x04,
+  0x01, 0x02, 0x03, 0x04, 0x02, 0x05, 0x05, 0x0A, 0x02, 0x06, 0x04, 0x0C, 0x05, 0x07, 0x0B, 0x04,
+  0x03, 0x04, 0x04, 0x03, 0x05, 0x0B, 0x07, 0x04, 0x05, 0x07, 0x0A, 0x04, 0x08, 0x0E, 0x0E, 0x03,
+  0x01, 0x02, 0x02, 0x05, 0x03, 0x04, 0x05, 0x0B, 0x02, 0x06, 0x05, 0x07, 0x04, 0x0C, 0x0A, 0x04,
+  0x03, 0x04, 0x05, 0x0A, 0x04, 0x03, 0x07, 0x04, 0x05, 0x07, 0x08, 0x0E, 0x0B, 0x04, 0x0E, 0x03,
+  0x02, 0x06, 0x05, 0x07, 0x05, 0x07, 0x08, 0x0E, 0x06, 0x09, 0x07, 0x0F, 0x07, 0x0F, 0x0E, 0x0D,
+  0x04, 0x0C, 0x0B, 0x04, 0x0A, 0x04, 0x0E, 0x03, 0x07, 0x0F, 0x0E, 0x0D, 0x0E, 0x0D, 0x02, 0x01,
+  0x01, 0x02, 0x02, 0x05, 0x02, 0x05, 0x06, 0x07, 0x03, 0x05, 0x04, 0x0A, 0x04, 0x0B, 0x0C, 0x04,
+  0x02, 0x05, 0x06, 0x07, 0x06, 0x07, 0x09, 0x0F, 0x05, 0x08, 0x07, 0x0E, 0x07, 0x0E, 0x0F, 0x0D,
+  0x03, 0x05, 0x04, 0x0B, 0x05, 0x08, 0x07, 0x0E, 0x04, 0x07, 0x03, 0x04, 0x0A, 0x0E, 0x04, 0x03,
+  0x04, 0x0A, 0x0C, 0x04, 0x07, 0x0E, 0x0F, 0x0D, 0x0B, 0x0E, 0x04, 0x03, 0x0E, 0x02, 0x0D, 0x01,
+  0x03, 0x05, 0x05, 0x08, 0x04, 0x0A, 0x07, 0x0E, 0x04, 0x07, 0x0B, 0x0E, 0x03, 0x04, 0x04, 0x03,
+  0x04, 0x0B, 0x07, 0x0E, 0x0C, 0x04, 0x0F, 0x0D, 0x0A, 0x0E, 0x0E, 0x02, 0x04, 0x03, 0x0D, 0x01,
+  0x04, 0x07, 0x0A, 0x0E, 0x0B, 0x0E, 0x0E, 0x02, 0x0C, 0x0F, 0x04, 0x0D, 0x04, 0x0D, 0x03, 0x01,
+  0x03, 0x04, 0x04, 0x03, 0x04, 0x03, 0x0D, 0x01, 0x04, 0x0D, 0x03, 0x01, 0x03, 0x01, 0x01, 0x00
+]
+
+REGULAR_CELL_DATA = [
+  {"geometryCounts": 0x00, "vertexIndex": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]},
+  {"geometryCounts": 0x31, "vertexIndex": [0,1,2,0,0,0,0,0,0,0,0,0,0,0,0]},
+  {"geometryCounts": 0x62, "vertexIndex": [0,1,2,3,4,5,0,0,0,0,0,0,0,0,0]},
+  {"geometryCounts": 0x42, "vertexIndex": [0,1,2,0,2,3,0,0,0,0,0,0,0,0,0]},
+  {"geometryCounts": 0x53, "vertexIndex": [0,1,4,1,3,4,1,2,3,0,0,0,0,0,0]},
+  {"geometryCounts": 0x73, "vertexIndex": [0,1,2,0,2,3,4,5,6,0,0,0,0,0,0]},
+  {"geometryCounts": 0x93, "vertexIndex": [0,1,2,3,4,5,6,7,8,0,0,0,0,0,0]},
+  {"geometryCounts": 0x84, "vertexIndex": [0,1,4,1,3,4,1,2,3,5,6,7,0,0,0]},
+  {"geometryCounts": 0x84, "vertexIndex": [0,1,2,0,2,3,4,5,6,4,6,7,0,0,0]},
+  {"geometryCounts": 0xC4, "vertexIndex": [0,1,2,3,4,5,6,7,8,9,10,11,0,0,0]},
+  {"geometryCounts": 0x64, "vertexIndex": [0,4,5,0,1,4,1,3,4,1,2,3,0,0,0]},
+  {"geometryCounts": 0x64, "vertexIndex": [0,5,4,0,4,1,1,4,3,1,3,2,0,0,0]},
+  {"geometryCounts": 0x64, "vertexIndex": [0,4,5,0,3,4,0,1,3,1,2,3,0,0,0]},
+  {"geometryCounts": 0x64, "vertexIndex": [0,1,2,0,2,3,0,3,4,0,4,5,0,0,0]},
+  {"geometryCounts": 0x75, "vertexIndex": [0,1,2,0,2,3,0,3,4,0,4,5,0,5,6]},
+  {"geometryCounts": 0x95, "vertexIndex": [0,4,5,0,3,4,0,1,3,1,2,3,6,7,8]}
+]
+
+ROW_SIZE = 32
+
+def edge_key(a, b):
+  return (min(a, b), max(a, b))
+
+def get_triangles(cell):
+  n_tri = cell["geometryCounts"] & 0x0f
+  vi = cell["vertexIndex"]
+  return [tuple(vi[i*3:(i+1)*3]) for i in range(n_tri)]
+
+def get_boundary_edges(triangles):
+  counts = {}
+  for t in triangles:
+    for e in [edge_key(t[0], t[1]), edge_key(t[1], t[2]), edge_key(t[2], t[0])]:
+      counts[e] = counts.get(e, 0) + 1
+  return [e for e, c in counts.items() if c == 1]
+
+def get_polygon_components(triangles):
+  boundary = get_boundary_edges(triangles)
+  if not boundary:
+    return []
+  adj = {}
+  for (a, b) in boundary:
+    adj.setdefault(a, []).append(b)
+    adj.setdefault(b, []).append(a)
+  unused = set(boundary)
+  components = []
+  while unused:
+    start = next(iter(unused))
+    v0, v1 = start
+    poly = [v0, v1]
+    prev, cur = v0, v1
+    unused.discard(start)
+    while cur != v0:
+      next_ = None
+      for n in adj.get(cur, []):
+        edge = edge_key(cur, n)
+        if n != prev and edge in unused:
+          next_ = n
+          break
+      if next_ is None:
+        break
+      edge = edge_key(cur, next_)
+      unused.discard(edge)
+      poly.append(next_)
+      prev, cur = cur, next_
+    if len(poly) >= 3:
+      components.append(poly)
+  return components
+
+def build_row(components):
+  row = [-1] * ROW_SIZE
+  k = 0
+  row[k] = len(components)
+  k += 1
+  for poly in components:
+    if k >= ROW_SIZE:
+      break
+    row[k] = len(poly)
+    k += 1
+    for v in poly:
+      if k >= ROW_SIZE:
+        break
+      row[k] = v
+      k += 1
+  return row
+
+def build_table():
+  table = []
+  for case_idx in range(256):
+    class_idx = REGULAR_CELL_CLASS[case_idx]
+    cell = REGULAR_CELL_DATA[class_idx]
+    tris = get_triangles(cell)
+    comps = get_polygon_components(tris)
+    table.append(build_row(comps))
+  return table
+
+if __name__ == "__main__":
+  script_dir = os.path.dirname(os.path.abspath(__file__))
+  out_path = os.path.join(script_dir, "..", "..", "transvoxel-extended-tables.js")
+  table = build_table()
+  out = """/**
+ * Transvoxel extended: regular-cell polygon table (baked).
+ * [n_components, nv_0, idx..., nv_1, ...], -1 padded to 32. All tables in this file.
+ */
+export const regularCellPolyTable = """ + json.dumps(table) + ";\n"
+  with open(out_path, "w", encoding="utf-8") as f:
+    f.write(out)
+  print("Wrote", out_path)

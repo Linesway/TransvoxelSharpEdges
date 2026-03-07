@@ -4,7 +4,7 @@
  * So 0=(0,0,0), 1=(1,0,0), 2=(0,1,0), 3=(1,1,0), 4=(0,0,1), 5=(1,0,1), 6=(0,1,1), 7=(1,1,1).
  * Returns { vertices, indices } with 6 floats per vertex (x,y,z,nx,ny,nz) in [0,1]^3.
  */
-import { regularCellClass, regularCellData, regularVertexData } from '../tables/transvoxel-regular-tables.js';
+import { regularCellClass, regularCellData, regularVertexData } from '../tables/transvoxel-tables.js';
 
 // C4 / Transvoxel table convention: position from corner index = (corner&1, (corner>>1)&1, (corner>>2)&1)
 const CORNER_DELTA = [

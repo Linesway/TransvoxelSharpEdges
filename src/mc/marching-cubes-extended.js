@@ -5,8 +5,7 @@
  * - find_feature: p,n (nV); cog = sum(p)/nV; p -= cog; min_c criterion; rank 2/3; A(nV×3), b(nV); SVD(A); rank==2 → S[sminid]=0; svd_backsub; point = x + cog.
  * - flip_edges: flip if v1,v3 feature and v0,v2 not.
  */
-import { edgeTable } from '../tables/edge-table.js';
-import { polygonTable, polyTable } from '../tables/polygon-tables.js';
+import { edgeTable, polygonTable, polyTable } from '../tables/mc-extended-tables.js';
 import { svd_decomp, svd_backsub } from '../math/svd-isoex.js';
 
 // Must match mcTable/surfRecon: 0=(0,0,0), 1=(1,0,0), 2=(1,1,0), 3=(0,1,0), 4=(0,0,1), 5=(1,0,1), 6=(1,1,1), 7=(0,1,1)
