@@ -41,15 +41,12 @@ rcp.forEach((row) => {
 out.push('};');
 out.push('');
 out.push('const int polyTable[kPolyTableSize][kPolyTableRowSize] = {');
+const POLY_ROW_SIZE = 27;
 for (let i = 0; i <= 8; i++) {
   const row = poly[i];
-  if (!row || row.length === 0) {
-    out.push('  { -1 },  // ' + i);
-  } else {
-    const padded = row.slice(0, 27);
-    while (padded.length < 27) padded.push(-1);
-    out.push('  { ' + padded.join(', ') + ' },  // ' + i);
-  }
+  const padded = (!row || row.length === 0) ? [] : row.slice(0, POLY_ROW_SIZE);
+  while (padded.length < POLY_ROW_SIZE) padded.push(-1);
+  out.push('  { ' + padded.join(', ') + ' },  // ' + i);
 }
 out.push('};');
 out.push('');

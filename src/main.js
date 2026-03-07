@@ -322,3 +322,111 @@ if (extendedMesh) {
   app.root.addChild(extendedEntity);
   chunkState.extendedEntity = extendedEntity;
 }
+
+// 3D text labels: canvas texture on a quad, billboarded toward camera
+const labelHeight = 0.9;
+const labelScale = 0.35; // world-space width of label quad
+
+function createTextTexture(device, text) {
+  const padding = 8;
+  const fontSize = 52;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
+  const metrics = ctx.measureText(text);
+  const w = Math.max(64, Math.ceil(metrics.width) + padding * 2);
+  const h = fontSize + padding * 2;
+  canvas.width = w;
+  canvas.height = h;
+  ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(0, 0, w, h);
+  // outline
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 4;
+  ctx.strokeText(text, w / 2, h / 2);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(text, w / 2, h / 2);
+  const texture = new pc.Texture(device, {
+    width: w,
+    height: h,
+    format: pc.PIXELFORMAT_RGBA8,
+    mipmaps: false,
+    minFilter: pc.FILTER_LINEAR,
+    magFilter: pc.FILTER_LINEAR,
+    addressU: pc.ADDRESS_CLAMP,
+    addressV: pc.ADDRESS_CLAMP,
+    flipY: false // canvas (0,0) = top-left; keep as-is so UVs match
+  });
+  texture.setSource(canvas);
+  texture.upload(); // force upload now to avoid lazy init / white quad on first frame
+  return texture;
+}
+
+function createLabelQuad(app, text, parentEntity) {
+  const device = app.graphicsDevice;
+  const texture = createTextTexture(device, text);
+  const mesh = new pc.Mesh(device);
+  const h = labelScale * 0.5;
+  const aspect = texture.width / texture.height;
+  const w = h * aspect;
+  const positions = new Float32Array([
+    -w, -h, 0,
+    w, -h, 0,
+    w, h, 0,
+    -w, h, 0
+  ]);
+  const uvs = new Float32Array([0, 1, 1, 1, 1, 0, 0, 0]);
+  const indices = new Uint16Array([0, 1, 2, 0, 2, 3]); // quad facing +Z
+  mesh.setPositions(positions);
+  mesh.setNormals(pc.calculateNormals(positions, indices));
+  mesh.setUvs(0, uvs);
+  mesh.setIndices(indices);
+  mesh.update();
+
+  const mat = new pc.StandardMaterial();
+  mat.diffuseMap = texture;
+  mat.diffuse = new pc.Color(1, 1, 1);
+  mat.emissiveMap = texture; // unlit: show texture as emissive so it's visible without lights
+  mat.emissive = new pc.Color(1, 1, 1);
+  mat.opacity = 1;
+  mat.blendType = pc.BLEND_NORMAL;
+  mat.cull = pc.CULLFACE_NONE;
+  mat.useLighting = false;
+  mat.update();
+
+  const entity = new pc.Entity('Label');
+  entity.addComponent('render');
+  entity.render.type = 'asset';
+  entity.render.meshInstances = [new pc.MeshInstance(mesh, mat)];
+  entity.setLocalPosition(0, labelHeight, 0);
+  parentEntity.addChild(entity);
+  return entity;
+}
+
+const labelConfig = [
+  { entity: () => chunkState.mcEntity, text: 'MC' },
+  { entity: () => chunkState.extendedEntity, text: 'MC Extended' },
+  { entity: () => chunkState.tvEntity, text: 'Transvoxel' },
+  { entity: () => chunkState.tvxEntity, text: 'Transvoxel Extended' }
+];
+
+const labelEntities = [];
+labelConfig.forEach(({ entity, text }) => {
+  const parent = entity();
+  if (parent) {
+    labelEntities.push(createLabelQuad(app, text, parent));
+  }
+});
+
+app.on('update', () => {
+  const camEntity = camera;
+  if (!camEntity || !camEntity.getPosition) return;
+  const camPos = camEntity.getPosition();
+  labelEntities.forEach((label) => {
+    label.lookAt(camPos);
+    label.rotateLocal(0, 180, 0); // quad faces +Z; lookAt uses -Z, so flip to face camera
+  });
+});
