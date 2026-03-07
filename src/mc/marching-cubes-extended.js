@@ -7,7 +7,7 @@
  */
 import { edgeTable } from '../tables/edge-table.js';
 import { polygonTable, polyTable } from '../tables/polygon-tables.js';
-import { svd_decomp, svd_backsub } from './svd-isoex.js';
+import { svd_decomp, svd_backsub } from '../math/svd-isoex.js';
 
 // Must match mcTable/surfRecon: 0=(0,0,0), 1=(1,0,0), 2=(1,1,0), 3=(0,1,0), 4=(0,0,1), 5=(1,0,1), 6=(1,1,1), 7=(0,1,1)
 const CORNER_DELTA = [

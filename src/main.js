@@ -7,6 +7,7 @@ import { insidePositive, cubeSDF } from './noise/sdf.js';
 import { runMarchingCubes } from './mc/marching-cubes.js';
 import { runExtendedMarchingCubes } from './mc/marching-cubes-extended.js';
 import { runTransvoxelInterior } from './mc/transvoxel.js';
+import { runTransvoxelExtended } from './mc/transvoxel-extended.js';
 import { createMeshFromMCResult } from './mc/mc-mesh.js';
 import { createFpsCamera } from './camera/camera.js';
 
@@ -170,6 +171,34 @@ if (transvoxelMesh) {
   tvEntity.render.type = 'asset';
   tvEntity.render.meshInstances = [tvInstance];
   app.root.addChild(tvEntity);
+}
+
+// Transvoxel extended (regular-cell poly table + feature/SVD fan) — purple cube, far left
+const transvoxelExtResult = runTransvoxelExtended(mcRes, iso, fieldFn);
+const tvxVert = transvoxelExtResult.vertices.length / 6;
+const tvxTri = transvoxelExtResult.indices.length / 3;
+console.log('Transvoxel Extended result:', tvxVert, 'vertices,', tvxTri, 'triangles');
+
+const transvoxelExtMesh = createMeshFromMCResult(app.graphicsDevice, transvoxelExtResult, { center: true });
+if (transvoxelExtMesh) {
+  let tvxMaterial;
+  try {
+    tvxMaterial = new pc.StandardMaterial();
+    tvxMaterial.diffuse = new pc.Color(0.72, 0.35, 0.95);
+  } catch (_) {
+    tvxMaterial = defaultBox.render.material.clone();
+    tvxMaterial.diffuse = new pc.Color(0.72, 0.35, 0.95);
+  }
+  tvxMaterial.cull = pc.CULLFACE_NONE;
+  tvxMaterial.update();
+
+  const tvxInstance = new pc.MeshInstance(transvoxelExtMesh, tvxMaterial);
+  const tvxEntity = new pc.Entity('Transvoxel Extended Cube');
+  tvxEntity.setPosition(-7.5, 0, 0);
+  tvxEntity.addComponent('render');
+  tvxEntity.render.type = 'asset';
+  tvxEntity.render.meshInstances = [tvxInstance];
+  app.root.addChild(tvxEntity);
 }
 
 // Extended marching cubes (polygon table) — same SDF, blue cube
