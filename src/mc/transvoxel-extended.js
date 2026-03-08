@@ -252,6 +252,7 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
           tableOffset += vertexCountInPolygon;
 
           // regularCellPolyTable stores open n-gons (no repeated closing vertex).
+          //only a defense check, our tables are correct and never should generate a deformed polygon case
           if (vertexCountInPolygon < 3 || vertexCountInPolygon > 7) continue;
 
           const centerOfGravity = [0, 0, 0];

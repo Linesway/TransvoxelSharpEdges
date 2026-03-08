@@ -1,171 +1,166 @@
 /**
- * Self-contained least-squares solve for the IsoEx feature-point case.
- * Solves min ||A x - b|| for x in R³. A is m×3 (rows = normals), b length m.
- * Uses normal equations (A'A x = A'b) and 3×3 symmetric eigendecomposition.
- * Set USE_ISOEX_SVD = true to use the known-working Golub-Reinsch SVD (svd-isoex) instead.
+ * GPU-friendly SVD-based least-squares solver for A x ≈ b.
+ * Port of Nick Gildea's glsl_svd.cpp (QEF / feature points), which works in GLSL compute shaders.
+ * A is n×3 (n = 3..7), b is n×1. Returns x minimizing |A x - b|.
+ * rank2: if true, zero smallest singular value (edge features).
+ * Fixed-size arrays only for HLSL/GPU portability.
+ *
+ * Reference: https://github.com/nickgildea/qef (glsl_svd.cpp), public domain.
  */
 
-import { svd_decomp, svd_backsub } from './svd-isoex.js';
+const MAX_ROWS = 7;
+const COLS = 3;
+const N = 3;
+const SVD_NUM_SWEEPS = 5;
+const TINY = 1e-20;
 
-const USE_ISOEX_SVD = true; // temporary: use svd-isoex (Golub-Reinsch) instead of 3×3 eigen
+// Fixed-size scratch
+const A_flat = new Float64Array(MAX_ROWS * COLS);
+const b_flat = new Float64Array(MAX_ROWS);
+const ATA = new Float64Array(N * N);   // 3×3 symmetric (A^T A), row-major
+const ATb = new Float64Array(N);       // 3
+const V = new Float64Array(N * N);    // 3×3 eigenvectors (columns), row-major
+const sigma = new Float64Array(N);    // 3 eigenvalues (singular values squared for A^T A)
 
-const EPS = 1e-10;
+function at(M, i, j) { return M[i * N + j]; }
+function set(M, i, j, v) { M[i * N + j] = v; }
 
-/** Solve using IsoEx Golub-Reinsch SVD (known working). A copied so svd_decomp can overwrite. */
-function svdSolve3IsoEx(A, b, rank2) {
-  const m = A.length;
-  const Acopy = A.map(row => [row[0], row[1], row[2]]);
-  const S = [0, 0, 0];
-  const V = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-  svd_decomp(Acopy, S, V);
-  if (rank2) {
-    let minIdx = 0;
-    for (let i = 1; i < 3; i++) if (S[i] < S[minIdx]) minIdx = i;
-    S[minIdx] = 0;
-  }
-  const x = [0, 0, 0];
-  svd_backsub(Acopy, S, V, b, x);
-  return x;
-}
-
-function dot3(a, b) {
-  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-
-function cross3(a, b, out) {
-  out[0] = a[1] * b[2] - a[2] * b[1];
-  out[1] = a[2] * b[0] - a[0] * b[2];
-  out[2] = a[0] * b[1] - a[1] * b[0];
-}
-
-function norm3(v) {
-  const n = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-  return n < EPS ? 0 : n;
-}
-
-function scale3(v, s, out) {
-  out[0] = v[0] * s;
-  out[1] = v[1] * s;
-  out[2] = v[2] * s;
-}
-
-// Form ATA (3×3 symmetric) and ATb (3). A[row][col], b[row].
-function formNormalEquations(A, b, ATA, ATb) {
-  const m = A.length;
-  ATA[0] = 0; ATA[1] = 0; ATA[2] = 0;
-  ATA[3] = 0; ATA[4] = 0; ATA[5] = 0;
-  ATA[6] = 0; ATA[7] = 0; ATA[8] = 0;
-  ATb[0] = 0; ATb[1] = 0; ATb[2] = 0;
-  for (let k = 0; k < m; k++) {
-    const a0 = A[k][0], a1 = A[k][1], a2 = A[k][2];
-    const bk = b[k];
-    ATA[0] += a0 * a0; ATA[1] += a0 * a1; ATA[2] += a0 * a2;
-    ATA[4] += a1 * a1; ATA[5] += a1 * a2;
-    ATA[8] += a2 * a2;
-    ATb[0] += a0 * bk; ATb[1] += a1 * bk; ATb[2] += a2 * bk;
-  }
-  ATA[3] = ATA[1]; ATA[6] = ATA[2]; ATA[7] = ATA[5];
-}
-
-// 3×3 symmetric eigendecomposition. M stored row-major [0..8]. Writes eig[0..2] and V as 3 columns (V[0], V[1], V[2] are vec3).
-// Eigenvalues in descending order; eigenvectors normalized.
-function eigen3x3Sym(M, eig, V) {
-  const trace = M[0] + M[4] + M[8];
-  const c2 = M[0] * M[4] - M[1] * M[3] + M[0] * M[8] - M[2] * M[6] + M[4] * M[8] - M[5] * M[7];
-  const det = M[0] * (M[4] * M[8] - M[5] * M[7]) - M[1] * (M[3] * M[8] - M[5] * M[6]) + M[2] * (M[3] * M[7] - M[4] * M[6]);
-  // t³ - trace·t² + c2·t - det = 0  =>  t³ + a t² + b t + c = 0 with a=-trace, b=c2, c=-det
-  const a = -trace, b = c2, c = -det;
-  const p = b - a * a / 3, q = c - a * b / 3 + 2 * a * a * a / 27;
-  let y0, y1, y2;
-  if (p > 0) {
-    // Degenerate (one real root): use triple root at trace/3
-    const t = trace / 3;
-    eig[0] = t; eig[1] = t; eig[2] = t;
-    V[0][0] = 1; V[0][1] = 0; V[0][2] = 0;
-    V[1][0] = 0; V[1][1] = 1; V[1][2] = 0;
-    V[2][0] = 0; V[2][1] = 0; V[2][2] = 1;
+/** Givens coefficients to zero a_pq in symmetric 2×2 block. Same as glsl_svd givens_coeffs_sym. */
+function givensCoeffsSym(a_pp, a_pq, a_qq, out) {
+  if (a_pq === 0) {
+    out.c = 1; out.s = 0;
     return;
   }
-  if (Math.abs(p) < EPS) {
-    const r = Math.cbrt(-q);
-    y0 = r; y1 = r; y2 = r;
-  } else {
-    const sq = Math.sqrt(-p / 3);
-    const cap = sq < EPS ? 0 : Math.acos(Math.max(-1, Math.min(1, (3 * q / (2 * p)) / sq))) / 3;
-    y0 = 2 * sq * Math.cos(cap);
-    y1 = 2 * sq * Math.cos(cap - 2 * Math.PI / 3);
-    y2 = 2 * sq * Math.cos(cap + 2 * Math.PI / 3);
+  const tau = (a_qq - a_pp) / (2 * a_pq);
+  const stt = Math.sqrt(1 + tau * tau);
+  const tan = 1 / (tau >= 0 ? tau + stt : tau - stt);
+  out.c = 1 / Math.sqrt(1 + tan * tan);
+  out.s = tan * out.c;
+}
+
+/** Rotate (x,y) by (c,-s;s,c). Same as glsl_svd svd_rotate_xy. */
+function rotateXY(x, y, c, s) {
+  return { x: c * x - s * y, y: s * x + c * y };
+}
+
+/** Update 2×2 block diagonal and zero off-diag. Same as glsl_svd svd_rotateq_xy. */
+function rotateQXY(x, y, a, c, s) {
+  const cc = c * c, ss = s * s, mx = 2 * c * s * a;
+  return {
+    x: cc * x - mx + ss * y,
+    y: ss * x + mx + cc * y
+  };
+}
+
+/** One Jacobi sweep pair (a,b). Zeros ATA[a][b], updates ATA and V. */
+function svdRotate(a, b) {
+  const apq = at(ATA, a, b);
+  if (apq === 0) return;
+  const app = at(ATA, a, a);
+  const aqq = at(ATA, b, b);
+  const g = {};
+  givensCoeffsSym(app, apq, aqq, g);
+  const c = g.c, s = g.s;
+  const d = rotateQXY(app, aqq, apq, c, s);
+  set(ATA, a, a, d.x);
+  set(ATA, b, b, d.y);
+  set(ATA, a, b, 0);
+  set(ATA, b, a, 0);
+  const k = 3 - a - b;
+  const r0 = rotateXY(at(ATA, a, k), at(ATA, b, k), c, s);
+  set(ATA, a, k, r0.x);
+  set(ATA, b, k, r0.y);
+  set(ATA, k, a, r0.x);
+  set(ATA, k, b, r0.y);
+  for (let j = 0; j < N; j++) {
+    const rv = rotateXY(at(V, j, a), at(V, j, b), c, s);
+    set(V, j, a, rv.x);
+    set(V, j, b, rv.y);
   }
-  const t0 = y0 - a / 3, t1 = y1 - a / 3, t2 = y2 - a / 3;
-  // Sort descending
-  if (t0 >= t1 && t0 >= t2) {
-    eig[0] = t0;
-    if (t1 >= t2) { eig[1] = t1; eig[2] = t2; } else { eig[1] = t2; eig[2] = t1; }
-  } else if (t1 >= t0 && t1 >= t2) {
-    eig[0] = t1;
-    if (t0 >= t2) { eig[1] = t0; eig[2] = t2; } else { eig[1] = t2; eig[2] = t0; }
-  } else {
-    eig[0] = t2;
-    if (t0 >= t1) { eig[1] = t0; eig[2] = t1; } else { eig[1] = t1; eig[2] = t0; }
+}
+
+/** Diagonalize symmetric ATA; on exit ATA is diagonal (eigenvalues), V holds eigenvectors. */
+function svdSolveSym() {
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) set(V, i, j, i === j ? 1 : 0);
   }
-  // Eigenvectors: (M - λI) v = 0 => take two rows, cross product
-  const row0 = [M[0], M[1], M[2]];
-  const row1 = [M[3], M[4], M[5]];
-  const row2 = [M[6], M[7], M[8]];
-  for (let i = 0; i < 3; i++) {
-    const lam = eig[i];
-    row0[0] = M[0] - lam; row0[1] = M[1]; row0[2] = M[2];
-    row1[0] = M[3]; row1[1] = M[4] - lam; row1[2] = M[5];
-    row2[0] = M[6]; row2[1] = M[7]; row2[2] = M[8] - lam;
-    cross3(row0, row1, V[i]);
-    let n = norm3(V[i]);
-    if (n < EPS) {
-      cross3(row1, row2, V[i]);
-      n = norm3(V[i]);
+  for (let i = 0; i < SVD_NUM_SWEEPS; i++) {
+    svdRotate(0, 1);
+    svdRotate(0, 2);
+    svdRotate(1, 2);
+  }
+  sigma[0] = at(ATA, 0, 0);
+  sigma[1] = at(ATA, 1, 1);
+  sigma[2] = at(ATA, 2, 2);
+}
+
+/** Pseudoinverse weight: 1/x if |x| and |1/x| above tol, else 0. Same as glsl_svd svd_invdet. */
+function invDet(x, tol) {
+  const ax = Math.abs(x);
+  return (ax < tol || Math.abs(1 / x) < tol) ? 0 : (1 / x);
+}
+
+/** x = (V * diag(d) * V^T) * ATb with d = pseudoinverse of sigma; rank2 zeros smallest. */
+function solveFromSVD(rank2, out) {
+  let d0 = invDet(sigma[0], TINY);
+  let d1 = invDet(sigma[1], TINY);
+  let d2 = invDet(sigma[2], TINY);
+  if (rank2) {
+    const s0 = sigma[0], s1 = sigma[1], s2 = sigma[2];
+    if (s0 <= s1 && s0 <= s2) d0 = 0;
+    else if (s1 <= s0 && s1 <= s2) d1 = 0;
+    else d2 = 0;
+  }
+  const v00 = at(V, 0, 0), v01 = at(V, 0, 1), v02 = at(V, 0, 2);
+  const v10 = at(V, 1, 0), v11 = at(V, 1, 1), v12 = at(V, 1, 2);
+  const v20 = at(V, 2, 0), v21 = at(V, 2, 1), v22 = at(V, 2, 2);
+  const q0 = ATb[0], q1 = ATb[1], q2 = ATb[2];
+  out[0] = (v00 * d0 * v00 + v01 * d1 * v01 + v02 * d2 * v02) * q0
+         + (v00 * d0 * v10 + v01 * d1 * v11 + v02 * d2 * v12) * q1
+         + (v00 * d0 * v20 + v01 * d1 * v21 + v02 * d2 * v22) * q2;
+  out[1] = (v10 * d0 * v00 + v11 * d1 * v01 + v12 * d2 * v02) * q0
+         + (v10 * d0 * v10 + v11 * d1 * v11 + v12 * d2 * v12) * q1
+         + (v10 * d0 * v20 + v11 * d1 * v21 + v12 * d2 * v22) * q2;
+  out[2] = (v20 * d0 * v00 + v21 * d1 * v01 + v22 * d2 * v02) * q0
+         + (v20 * d0 * v10 + v21 * d1 * v11 + v22 * d2 * v12) * q1
+         + (v20 * d0 * v20 + v21 * d1 * v21 + v22 * d2 * v22) * q2;
+}
+
+/** Form ATA = A^T A and ATb = A^T b from first n rows. A_flat is n×3 (rows), so A^T is 3×n. */
+function formATAATb(n) {
+  for (let i = 0; i < N; i++) {
+    for (let j = i; j < N; j++) {
+      let sum = 0;
+      for (let k = 0; k < n; k++) sum += A_flat[k * COLS + i] * A_flat[k * COLS + j];
+      set(ATA, i, j, sum);
+      set(ATA, j, i, sum);
     }
-    if (n < EPS) {
-      cross3(row0, row2, V[i]);
-      n = norm3(V[i]);
-    }
-    if (n >= EPS) scale3(V[i], 1 / n, V[i]);
-    else { V[i][0] = i === 0 ? 1 : 0; V[i][1] = i === 1 ? 1 : 0; V[i][2] = i === 2 ? 1 : 0; }
+    let sum = 0;
+    for (let k = 0; k < n; k++) sum += A_flat[k * COLS + i] * b_flat[k];
+    ATb[i] = sum;
   }
 }
 
 /**
- * Solve min ||A x - b|| for x in R³.
- * @param {number[][]} A - m×3 matrix (array of 3-element rows, e.g. normals)
- * @param {number[]} b - length m
- * @param {boolean} rank2 - if true, zero smallest singular value (edge feature)
- * @returns {number[]} x - length 3
+ * Solve min |A x - b| for x in R^3.
+ * @param {Array<[number,number,number]>} matrixA - n rows of 3 (normals), n in 3..7
+ * @param {number[]} vectorB - length n (position·normal per vertex)
+ * @param {boolean} rank2 - if true, use rank-2 (zero smallest singular value)
+ * @returns {[number,number,number]} x
  */
-export function svdSolve3(A, b, rank2) {
-  if (USE_ISOEX_SVD) {
-    return svdSolve3IsoEx(A, b, rank2);
+export function svdSolve3(matrixA, vectorB, rank2) {
+  const n = matrixA.length;
+  if (n < 3 || n > MAX_ROWS || vectorB.length < n) return [0, 0, 0];
+  for (let i = 0; i < n; i++) {
+    const row = matrixA[i];
+    A_flat[i * COLS + 0] = row[0];
+    A_flat[i * COLS + 1] = row[1];
+    A_flat[i * COLS + 2] = row[2];
+    b_flat[i] = vectorB[i];
   }
-  const m = A.length;
-  const ATA = [0, 0, 0, 0, 0, 0, 0, 0, 0];
-  const ATb = [0, 0, 0];
-  formNormalEquations(A, b, ATA, ATb);
-
-  const eig = [0, 0, 0];
-  const V = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-  eigen3x3Sym(ATA, eig, V);
-
-  // Pseudo-inverse: x = V * diag(1/λ) * V' * ATb. For rank2, zero smallest λ (eig[2] after sort).
-  if (rank2) eig[2] = 0;
-
-  const w0 = dot3(V[0], ATb);
-  const w1 = dot3(V[1], ATb);
-  const w2 = dot3(V[2], ATb);
-  const inv0 = eig[0] > EPS ? 1 / eig[0] : 0;
-  const inv1 = eig[1] > EPS ? 1 / eig[1] : 0;
-  const inv2 = eig[2] > EPS ? 1 / eig[2] : 0;
-
-  const x = [
-    V[0][0] * (w0 * inv0) + V[1][0] * (w1 * inv1) + V[2][0] * (w2 * inv2),
-    V[0][1] * (w0 * inv0) + V[1][1] * (w1 * inv1) + V[2][1] * (w2 * inv2),
-    V[0][2] * (w0 * inv0) + V[1][2] * (w1 * inv1) + V[2][2] * (w2 * inv2)
-  ];
-  return x;
+  formATAATb(n);
+  svdSolveSym();
+  const out = [0, 0, 0];
+  solveFromSVD(rank2, out);
+  return out;
 }

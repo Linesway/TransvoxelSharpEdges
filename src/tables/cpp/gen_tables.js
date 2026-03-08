@@ -11,20 +11,31 @@ const cppPath = path.join(__dirname, 'transvoxel_extended_tables.cpp');
 
 const content = fs.readFileSync(jsPath, 'utf8');
 
-// Extract regularCellPolyTable: from "= " to "];" (first array)
+/** Find end of outer array (bracket-balanced); return substring up to and including ']'. */
+function extractArrayString(str) {
+  let depth = 0;
+  for (let i = 0; i < str.length; i++) {
+    if (str[i] === '[') depth++;
+    else if (str[i] === ']') {
+      depth--;
+      if (depth === 0) return str.slice(0, i + 1);
+    }
+  }
+  throw new Error('array end not found');
+}
+
+// Extract regularCellPolyTable
 const rcpStart = content.indexOf('regularCellPolyTable = ');
 if (rcpStart === -1) throw new Error('regularCellPolyTable not found');
 let rest = content.slice(rcpStart + 'regularCellPolyTable = '.length);
-const rcpEnd = rest.indexOf('];');
-const rcpStr = rest.slice(0, rcpEnd + 2);
+const rcpStr = extractArrayString(rest);
 const rcp = eval(rcpStr);
 
-// Extract polyTable
-const polyStart = content.indexOf('polyTable = ');
+// Extract polyTable (search after rcp so we don't hit false match in data)
+const polyStart = content.indexOf('polyTable = ', rcpStart + 1);
 if (polyStart === -1) throw new Error('polyTable not found');
 rest = content.slice(polyStart + 'polyTable = '.length);
-const polyEnd = rest.indexOf('];');
-const polyStr = rest.slice(0, polyEnd + 2);
+const polyStr = extractArrayString(rest);
 const poly = eval(polyStr);
 
 const out = [];
@@ -45,7 +56,7 @@ out.push('};');
 out.push('');
 out.push('const int polyTable[kPolyTableSize][kPolyTableRowSize] = {');
 const POLY_ROW_SIZE = 27;
-for (let i = 0; i <= 8; i++) {
+for (let i = 0; i <= 7; i++) {
   const row = poly[i];
   const padded = (!row || row.length === 0) ? [] : row.slice(0, POLY_ROW_SIZE);
   while (padded.length < POLY_ROW_SIZE) padded.push(-1);
