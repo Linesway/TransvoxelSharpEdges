@@ -1,16 +1,14 @@
 /**
- * IsoEx Math SVD — Golub-Reinsch (Numerical Recipes) port.
- * A = U * diag(S) * V^T. On exit A is overwritten: first n columns hold U (m×n).
- * S is length n, V is n×n.
- * Backsub: x = V * inv(S) * U^T * b.
+ * Self-contained least-squares solve for the IsoEx feature-point case.
+ * Solves min ||A x - b|| for x in R³. A is m×3 (rows = normals), b length m.
+ * Uses the same algorithm as svd-isoex: SVD of A (Golub-Reinsch), then x = V inv(S) U' b.
+ * No imports. Contained in this file only — matches previous (svd-isoex) results.
  */
+
+const N = 3;
 
 function dmax(a, b) {
   return a > b ? a : b;
-}
-
-function imin(a, b) {
-  return a < b ? a : b;
 }
 
 function sign(a, b) {
@@ -25,13 +23,13 @@ function dpythag(a, b) {
 }
 
 /**
- * SVD of A (m×n). A modified in place (first n cols become U). S length n, V n×n.
- * A[k][i] = row k, col i. V[j][jj] = row j, col jj.
+ * SVD of A (m×3). A modified in place: first 3 columns become U. S length 3, V 3×3.
+ * Golub-Reinsch (Numerical Recipes) port, n=3 only.
  */
-export function svd_decomp(A, S, V) {
+function svd_decomp(A, S, V) {
   const m = A.length;
-  const n = A[0].length;
-  const rv1 = new Array(n);
+  const n = N;
+  const rv1 = [0, 0, 0];
   let l = 0;
   let anorm = 0;
   let scale = 0;
@@ -43,7 +41,7 @@ export function svd_decomp(A, S, V) {
     rv1[i] = scale * g;
     g = 0;
     scale = 0;
-    let s = 0;
+    s = 0;
     if (i < m) {
       for (let k = i; k < m; k++) scale += Math.abs(A[k][i]);
       if (scale !== 0) {
@@ -51,15 +49,15 @@ export function svd_decomp(A, S, V) {
           A[k][i] /= scale;
           s += A[k][i] * A[k][i];
         }
-        let f = A[i][i];
+        const f = A[i][i];
         g = -sign(Math.sqrt(s), f);
         const h = f * g - s;
         A[i][i] = f - g;
         for (let j = l; j < n; j++) {
           s = 0;
           for (let k = i; k < m; k++) s += A[k][i] * A[k][j];
-          f = s / h;
-          for (let k = i; k < m; k++) A[k][j] += f * A[k][i];
+          const f2 = s / h;
+          for (let k = i; k < m; k++) A[k][j] += f2 * A[k][i];
         }
         for (let k = i; k < m; k++) A[k][i] *= scale;
       }
@@ -108,7 +106,8 @@ export function svd_decomp(A, S, V) {
     l = i;
   }
 
-  for (let i = imin(m, n) - 1; i >= 0; i--) {
+  const minmn = m < n ? m : n;
+  for (let i = minmn - 1; i >= 0; i--) {
     l = i + 1;
     g = S[i];
     for (let j = l; j < n; j++) A[i][j] = 0;
@@ -141,9 +140,9 @@ export function svd_decomp(A, S, V) {
         if (nm >= 0 && Math.abs(S[nm]) + anorm === anorm) break;
       }
       if (flag) {
-        let c = 0, s = 1;
+        let c = 0, sn = 1;
         for (let i = l; i <= k; i++) {
-          const f = s * rv1[i];
+          const f = sn * rv1[i];
           rv1[i] = c * rv1[i];
           if (Math.abs(f) + anorm === anorm) break;
           g = S[i];
@@ -151,12 +150,12 @@ export function svd_decomp(A, S, V) {
           S[i] = h;
           const invH = 1 / h;
           c = g * invH;
-          s = -f * invH;
+          sn = -f * invH;
           for (let j = 0; j < m; j++) {
             const y = A[j][nm];
             const z = A[j][i];
-            A[j][nm] = y * c + z * s;
-            A[j][i] = z * c - y * s;
+            A[j][nm] = y * c + z * sn;
+            A[j][i] = z * c - y * sn;
           }
         }
       }
@@ -168,9 +167,7 @@ export function svd_decomp(A, S, V) {
         }
         break;
       }
-      if (its === 29) {
-        console.warn('SVD: no convergence after 30 iterations');
-      }
+      if (its === 99) break;
       let x = S[l];
       nm = k - 1;
       let y = S[nm];
@@ -179,41 +176,41 @@ export function svd_decomp(A, S, V) {
       let f = ((y - z) * (y + z) + (g - h) * (g + h)) / (2 * h * y);
       g = dpythag(f, 1);
       f = ((x - z) * (x + z) + h * ((y / (f + sign(g, f))) - h)) / x;
-      let c = 1, s = 1;
+      let c = 1, sn = 1;
       for (let j = l; j <= nm; j++) {
         const ii = j + 1;
         g = rv1[ii];
         y = S[ii];
-        h = s * g;
+        h = sn * g;
         g = c * g;
         z = dpythag(f, h);
         rv1[j] = z;
         c = f / z;
-        s = h / z;
-        f = x * c + g * s;
-        g = g * c - x * s;
-        h = y * s;
+        sn = h / z;
+        f = x * c + g * sn;
+        g = g * c - x * sn;
+        h = y * sn;
         y *= c;
         for (let jj = 0; jj < n; jj++) {
           x = V[jj][j];
           z = V[jj][ii];
-          V[jj][j] = x * c + z * s;
-          V[jj][ii] = z * c - x * s;
+          V[jj][j] = x * c + z * sn;
+          V[jj][ii] = z * c - x * sn;
         }
         z = dpythag(f, h);
         S[j] = z;
         if (z !== 0) {
           z = 1 / z;
           c = f * z;
-          s = h * z;
+          sn = h * z;
         }
-        f = c * g + s * y;
-        x = c * y - s * g;
+        f = c * g + sn * y;
+        x = c * y - sn * g;
         for (let jj = 0; jj < m; jj++) {
           y = A[jj][j];
           z = A[jj][ii];
-          A[jj][j] = y * c + z * s;
-          A[jj][ii] = z * c - y * s;
+          A[jj][j] = y * c + z * sn;
+          A[jj][ii] = z * c - y * sn;
         }
       }
       rv1[l] = 0;
@@ -221,16 +218,15 @@ export function svd_decomp(A, S, V) {
       S[k] = x;
     }
   }
-  return true;
 }
 
 /**
- * SVD backsub: x = V * inv(S) * U^T * b. A holds U (m×n), S length n, V n×n, b length m, x length n.
+ * Backsub: x = V * inv(S) * U^T * b. A holds U (m×3), S length 3, V 3×3, b length m, x length 3.
  */
-export function svd_backsub(A, S, V, b, x) {
+function svd_backsub(A, S, V, b, x) {
   const m = A.length;
-  const n = V.length;
-  const tmp = new Array(n);
+  const n = N;
+  const tmp = [0, 0, 0];
   for (let j = 0; j < n; j++) {
     let s = 0;
     if (S[j] !== 0) {
@@ -244,4 +240,35 @@ export function svd_backsub(A, S, V, b, x) {
     for (let jj = 0; jj < n; jj++) s += V[j][jj] * tmp[jj];
     x[j] = s;
   }
+}
+
+/**
+ * Solve min ||A x - b|| for x in R³.
+ * @param {number[][]} A - m×3 matrix (array of 3-element rows, e.g. normals)
+ * @param {number[]} b - length m
+ * @param {boolean} rank2 - if true, zero smallest singular value (edge feature)
+ * @returns {number[]} x - length 3
+ */
+export function svdSolve3(A, b, rank2) {
+  const ACopy = A.map((row) => [row[0], row[1], row[2]]);
+  const S = [0, 0, 0];
+  const V = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  svd_decomp(ACopy, S, V);
+
+  if (rank2) {
+    const srank = Math.min(A.length, 3);
+    let smin = Number.POSITIVE_INFINITY;
+    let sminid = 0;
+    for (let i = 0; i < srank; i++) {
+      if (S[i] < smin) {
+        smin = S[i];
+        sminid = i;
+      }
+    }
+    S[sminid] = 0;
+  }
+
+  const x = [0, 0, 0];
+  svd_backsub(ACopy, S, V, b, x);
+  return x;
 }

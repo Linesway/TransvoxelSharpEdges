@@ -7,7 +7,7 @@
  */
 import { regularVertexData } from '../tables/transvoxel-tables.js';
 import { regularCellPolyTable, polyTable } from '../tables/transvoxel-extended-tables.js';
-import { svd_decomp, svd_backsub } from '../math/svd-isoex.js';
+import { svdSolve3 } from '../math/svd-solve3.js';
 
 // C4 / Transvoxel corner convention.
 const CORNER_DELTA = [
@@ -82,27 +82,8 @@ function findFeaturePoint(pDetect, nDetect, featureAngleRad, counts, pSvd, nSvd)
     b.push(pSvd[i][0] * nSvd[i][0] + pSvd[i][1] * nSvd[i][1] + pSvd[i][2] * nSvd[i][2]);
   }
 
-  const ACopy = A.map((row) => row.slice());
-  const S = [0, 0, 0];
-  const V = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-  svd_decomp(ACopy, S, V);
-
-  if (rank === 2) {
-    const srank = Math.min(nV, 3);
-    let smin = Number.POSITIVE_INFINITY;
-    let sminid = 0;
-    for (let i = 0; i < srank; i++) {
-      if (S[i] < smin) {
-        smin = S[i];
-        sminid = i;
-      }
-    }
-    S[sminid] = 0;
-  }
-
-  const x = [0, 0, 0];
-  svd_backsub(ACopy, S, V, b, x);
-  return { point: x, rank };
+  const point = svdSolve3(A, b, rank === 2);
+  return { point, rank };
 }
 
 function getPos(vertices, vi) {
@@ -242,19 +223,19 @@ export function runTransvoxelExtended(res, iso, fieldFn, options = {}) {
 
         const vertexArray = regularVertexData[caseIndex];
         const row = regularCellPolyTable[caseIndex];
-        const nComponents = row[0];
+        const n_components = row[0];
 
         // Build per-case sample vertex indices on demand.
         const samples = new Array(12);
         let maxIndex = 0;
         let tmpOffset = 1;
-        for (let comp = 0; comp < nComponents; comp++) {
-          const nvRaw = row[tmpOffset++];
-          for (let i = 0; i < nvRaw; i++) {
+        for (let comp = 0; comp < n_components; comp++) {
+          const n_vertices = row[tmpOffset++];
+          for (let i = 0; i < n_vertices; i++) {
             const idx = row[tmpOffset + i];
             if (idx > maxIndex) maxIndex = idx;
           }
-          tmpOffset += nvRaw;
+          tmpOffset += n_vertices;
         }
         for (let i = 0; i <= maxIndex; i++) {
           const code = vertexArray[i];
@@ -262,30 +243,30 @@ export function runTransvoxelExtended(res, iso, fieldFn, options = {}) {
         }
 
         let offset = 1;
-        for (let comp = 0; comp < nComponents; comp++) {
-          const nvRaw = row[offset++];
+        for (let comp = 0; comp < n_components; comp++) {
+          let n_vertices = row[offset++];
           const raw = [];
-          for (let i = 0; i < nvRaw; i++) raw.push(samples[row[offset + i]]);
-          offset += nvRaw;
+          for (let i = 0; i < n_vertices; i++) raw.push(samples[row[offset + i]]);
+          offset += n_vertices;
 
           // regularCellPolyTable stores closed loops (last index repeats first).
           let polyIndices = raw;
           if (raw.length >= 4 && raw[0] === raw[raw.length - 1]) {
             polyIndices = raw.slice(0, raw.length - 1);
           }
-          const nv = polyIndices.length;
-          if (nv < 3 || nv > 7) continue;
+          n_vertices = polyIndices.length;
+          if (n_vertices < 3 || n_vertices > 7) continue;
 
           const cog = [0, 0, 0];
-          for (let i = 0; i < nv; i++) {
+          for (let i = 0; i < n_vertices; i++) {
             const p = getPosition(polyIndices[i]);
             cog[0] += p[0]; cog[1] += p[1]; cog[2] += p[2];
           }
-          cog[0] /= nv; cog[1] /= nv; cog[2] /= nv;
+          cog[0] /= n_vertices; cog[1] /= n_vertices; cog[2] /= n_vertices;
 
           const pDetect = [];
           const nDetect = [];
-          for (let i = 0; i < nv; i++) {
+          for (let i = 0; i < n_vertices; i++) {
             const vi = polyIndices[i];
             const p = getPosition(vi);
             const limits = vertexLimitNormals[vi];
@@ -302,7 +283,7 @@ export function runTransvoxelExtended(res, iso, fieldFn, options = {}) {
 
           const pSvd = [];
           const nSvd = [];
-          for (let i = 0; i < nv; i++) {
+          for (let i = 0; i < n_vertices; i++) {
             const p = getPosition(polyIndices[i]);
             pSvd.push([p[0] - cog[0], p[1] - cog[1], p[2] - cog[2]]);
             nSvd.push(getNormal(polyIndices[i]));
@@ -322,11 +303,11 @@ export function runTransvoxelExtended(res, iso, fieldFn, options = {}) {
             const ln = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
             nx /= ln; ny /= ln; nz /= ln;
             const fv = addFeatureVertex(world, [nx, ny, nz]);
-            for (let j = 0; j < nv; j++) {
-              indices.push(polyIndices[j], polyIndices[(j + 1) % nv], fv);
+            for (let j = 0; j < n_vertices; j++) {
+              indices.push(polyIndices[j], polyIndices[(j + 1) % n_vertices], fv);
             }
           } else {
-            const tri = polyTable[nv];
+            const tri = polyTable[n_vertices];
             for (let j = 0; tri[j] !== -1; j += 3) {
               indices.push(
                 polyIndices[tri[j]],

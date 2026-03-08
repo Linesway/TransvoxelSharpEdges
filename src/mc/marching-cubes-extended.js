@@ -2,11 +2,11 @@
  * Extended Marching Cubes — line-by-line match of IsoEx ExtendedMarchingCubesT:
  * - process_cube: triTable[case][1] (n_components, n_vertices per sheet, indices); samples[12]; find_feature(vhandles); fan or polyTable.
  * - add_vertex: point + normal (IsoEx: directed_distance; we: gradient at point + limit normals for crease detection).
- * - find_feature: p,n (nV); cog = sum(p)/nV; p -= cog; min_c criterion; rank 2/3; A(nV×3), b(nV); SVD(A); rank==2 → S[sminid]=0; svd_backsub; point = x + cog.
+ * - find_feature: p,n (nV); cog = sum(p)/nV; p -= cog; min_c criterion; rank 2/3; svdSolve3(A,b,rank===2) → point = x + cog.
  * - flip_edges: flip if v1,v3 feature and v0,v2 not.
  */
 import { edgeTable, polygonTable, polyTable } from '../tables/mc-extended-tables.js';
-import { svd_decomp, svd_backsub } from '../math/svd-isoex.js';
+import { svdSolve3 } from '../math/svd-solve3.js';
 
 // Must match mcTable/surfRecon: 0=(0,0,0), 1=(1,0,0), 2=(1,1,0), 3=(0,1,0), 4=(0,0,1), 5=(1,0,1), 6=(1,1,1), 7=(0,1,1)
 const CORNER_DELTA = [
@@ -94,27 +94,8 @@ function findFeaturePoint(p_detect, n_detect, featureAngleRad, counts, p_svd, n_
     A.push([n[i][0], n[i][1], n[i][2]]);
     b.push(p[i][0] * n[i][0] + p[i][1] * n[i][1] + p[i][2] * n[i][2]);
   }
-  const A_copy = A.map(row => row.slice());
-  const S = [0, 0, 0];
-  const V = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-  svd_decomp(A_copy, S, V);
-
-  if (rank === 2) {
-    const srank = Math.min(nV, 3);
-    let smin = Number.POSITIVE_INFINITY;
-    let sminid = 0;
-    for (let i = 0; i < srank; i++) {
-      if (S[i] < smin) {
-        smin = S[i];
-        sminid = i;
-      }
-    }
-    S[sminid] = 0;
-  }
-
-  const x = [0, 0, 0];
-  svd_backsub(A_copy, S, V, b, x);
-  return { point: x, rank };
+  const point = svdSolve3(A, b, rank === 2);
+  return { point, rank };
 }
 
 /**
