@@ -7,6 +7,7 @@ import { insidePositive, cubeSDF } from './noise/sdf.js';
 import { runMarchingCubes } from './mc/marching-cubes.js';
 import { runExtendedMarchingCubes } from './mc/marching-cubes-extended.js';
 import { runTransvoxelInterior } from './mc/transvoxel.js';
+import { runTransvoxelInteriorVertexSharing } from './mc/transvoxel-vertex-sharing.js';
 import { runTransvoxelExtended } from './mc/transvoxel-extended.js';
 import { createMeshFromMCResult } from './mc/mc-mesh.js';
 import { createFpsCamera } from './camera/camera.js';
@@ -107,6 +108,7 @@ const chunkState = {
   iso: 0,
   mcEntity: null,
   tvEntity: null,
+  tvSharedEntity: null,
   tvxEntity: null,
   extendedEntity: null,
   materials: null
@@ -189,6 +191,12 @@ const chunkState = {
       chunkState.tvEntity.render.meshInstances = [new pc.MeshInstance(tvMesh, chunkState.materials.tv)];
     }
 
+    const transvoxelVSResult = runTransvoxelInteriorVertexSharing(mcRes, iso, fieldFn);
+    const tvSharedMesh = createMeshFromMCResult(app.graphicsDevice, transvoxelVSResult, { center: true });
+    if (tvSharedMesh && chunkState.tvSharedEntity && chunkState.materials.tvShared) {
+      chunkState.tvSharedEntity.render.meshInstances = [new pc.MeshInstance(tvSharedMesh, chunkState.materials.tvShared)];
+    }
+
     const transvoxelExtResult = runTransvoxelExtended(mcRes, iso, fieldFn);
     const tvxMesh = createMeshFromMCResult(app.graphicsDevice, transvoxelExtResult, { center: true });
     if (tvxMesh && chunkState.tvxEntity && chunkState.materials.tvx) {
@@ -217,7 +225,7 @@ app.root.addChild(defaultBox);
 
 // Create materials once (shared across rebuilds)
 function createChunkMaterials() {
-  let mc, tv, tvx, extended;
+  let mc, tv, tvShared, tvx, extended;
   try {
     mc = new pc.StandardMaterial();
     mc.diffuse = new pc.Color(0.2, 0.85, 0.4);
@@ -239,6 +247,16 @@ function createChunkMaterials() {
   tv.update();
 
   try {
+    tvShared = new pc.StandardMaterial();
+    tvShared.diffuse = new pc.Color(0.15, 0.75, 0.75);
+  } catch (_) {
+    tvShared = defaultBox.render.material.clone();
+    tvShared.diffuse = new pc.Color(0.15, 0.75, 0.75);
+  }
+  tvShared.cull = pc.CULLFACE_NONE;
+  tvShared.update();
+
+  try {
     tvx = new pc.StandardMaterial();
     tvx.diffuse = new pc.Color(0.72, 0.35, 0.95);
   } catch (_) {
@@ -258,7 +276,7 @@ function createChunkMaterials() {
   extended.cull = pc.CULLFACE_NONE;
   extended.update();
 
-  return { mc, tv, tvx, extended };
+  return { mc, tv, tvShared, tvx, extended };
 }
 
 chunkState.materials = createChunkMaterials();
@@ -293,6 +311,20 @@ if (transvoxelMesh) {
   tvEntity.render.meshInstances = [new pc.MeshInstance(transvoxelMesh, chunkState.materials.tv)];
   app.root.addChild(tvEntity);
   chunkState.tvEntity = tvEntity;
+}
+
+const transvoxelVSResult = runTransvoxelInteriorVertexSharing(mcRes, iso, fieldFn);
+console.log('Transvoxel (vertex-sharing) result:', transvoxelVSResult.vertices.length / 6, 'vertices,', transvoxelVSResult.indices.length / 3, 'triangles');
+
+const transvoxelVSMesh = createMeshFromMCResult(app.graphicsDevice, transvoxelVSResult, { center: true });
+if (transvoxelVSMesh) {
+  const tvSharedEntity = new pc.Entity('Transvoxel VS Cube');
+  tvSharedEntity.setPosition(-6, 0, 0);
+  tvSharedEntity.addComponent('render');
+  tvSharedEntity.render.type = 'asset';
+  tvSharedEntity.render.meshInstances = [new pc.MeshInstance(transvoxelVSMesh, chunkState.materials.tvShared)];
+  app.root.addChild(tvSharedEntity);
+  chunkState.tvSharedEntity = tvSharedEntity;
 }
 
 const transvoxelExtResult = runTransvoxelExtended(mcRes, iso, fieldFn);
@@ -410,6 +442,7 @@ const labelConfig = [
   { entity: () => chunkState.mcEntity, text: 'MC' },
   { entity: () => chunkState.extendedEntity, text: 'MC Extended' },
   { entity: () => chunkState.tvEntity, text: 'Transvoxel' },
+  { entity: () => chunkState.tvSharedEntity, text: 'Transvoxel (VS)' },
   { entity: () => chunkState.tvxEntity, text: 'Transvoxel Extended' }
 ];
 
