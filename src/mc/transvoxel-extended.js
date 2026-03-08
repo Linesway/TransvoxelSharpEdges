@@ -15,135 +15,135 @@ const CORNER_DELTA = [
   [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1]
 ];
 
-function edgeKey(i, j) {
-  return i < j ? `${i},${j}` : `${j},${i}`;
+function edgeKey(vertexIndexA, vertexIndexB) {
+  return vertexIndexA < vertexIndexB ? `${vertexIndexA},${vertexIndexB}` : `${vertexIndexB},${vertexIndexA}`;
 }
 
-function sampleField(ix, iy, iz, res, fieldFn) {
-  return fieldFn(ix / res, iy / res, iz / res);
+function sampleField(gridX, gridY, gridZ, resolution, fieldFn) {
+  return fieldFn(gridX / resolution, gridY / resolution, gridZ / resolution);
 }
 
-function gradientAt(x, y, z, fieldFn, eps = 1e-6) {
-  const gx = (fieldFn(x + eps, y, z) - fieldFn(x - eps, y, z)) / (2 * eps);
-  const gy = (fieldFn(x, y + eps, z) - fieldFn(x, y - eps, z)) / (2 * eps);
-  const gz = (fieldFn(x, y, z + eps) - fieldFn(x, y, z - eps)) / (2 * eps);
-  return [gx, gy, gz];
+function gradientAt(positionX, positionY, positionZ, fieldFn, epsilon = 1e-6) {
+  const gradientX = (fieldFn(positionX + epsilon, positionY, positionZ) - fieldFn(positionX - epsilon, positionY, positionZ)) / (2 * epsilon);
+  const gradientY = (fieldFn(positionX, positionY + epsilon, positionZ) - fieldFn(positionX, positionY - epsilon, positionZ)) / (2 * epsilon);
+  const gradientZ = (fieldFn(positionX, positionY, positionZ + epsilon) - fieldFn(positionX, positionY, positionZ - epsilon)) / (2 * epsilon);
+  return [gradientX, gradientY, gradientZ];
 }
 
-function interpolate(p0, p1, v0, v1, iso) {
-  const denom = v1 - v0;
-  const t = Math.abs(denom) < 1e-9 ? 0.5 : (iso - v0) / denom;
+function interpolate(position0, position1, value0, value1, isovalue) {
+  const denominator = value1 - value0;
+  const interpolationParameter = Math.abs(denominator) < 1e-9 ? 0.5 : (isovalue - value0) / denominator;
   return [
-    p0[0] + t * (p1[0] - p0[0]),
-    p0[1] + t * (p1[1] - p0[1]),
-    p0[2] + t * (p1[2] - p0[2])
+    position0[0] + interpolationParameter * (position1[0] - position0[0]),
+    position0[1] + interpolationParameter * (position1[1] - position0[1]),
+    position0[2] + interpolationParameter * (position1[2] - position0[2])
   ];
 }
 
-function findFeaturePoint(pDetect, nDetect, featureAngleRad, counts, pSvd, nSvd) {
-  const nDetectCount = pDetect.length;
-  let minC = 1;
+function findFeaturePoint(positionsForDetection, normalsForDetection, featureAngleRad, counts, positionsForSvd, normalsForSvd) {
+  const detectionCount = positionsForDetection.length;
+  let minimumCosine = 1;
   let axis = [0, 0, 0];
-  for (let i = 0; i < nDetectCount; i++) {
-    for (let j = 0; j < nDetectCount; j++) {
-      const c = nDetect[i][0] * nDetect[j][0] + nDetect[i][1] * nDetect[j][1] + nDetect[i][2] * nDetect[j][2];
-      if (c < minC) {
-        minC = c;
+  for (let detectionIndexI = 0; detectionIndexI < detectionCount; detectionIndexI++) {
+    for (let detectionIndexJ = 0; detectionIndexJ < detectionCount; detectionIndexJ++) {
+      const normalDotProduct = normalsForDetection[detectionIndexI][0] * normalsForDetection[detectionIndexJ][0] + normalsForDetection[detectionIndexI][1] * normalsForDetection[detectionIndexJ][1] + normalsForDetection[detectionIndexI][2] * normalsForDetection[detectionIndexJ][2];
+      if (normalDotProduct < minimumCosine) {
+        minimumCosine = normalDotProduct;
         axis = [
-          nDetect[i][1] * nDetect[j][2] - nDetect[i][2] * nDetect[j][1],
-          nDetect[i][2] * nDetect[j][0] - nDetect[i][0] * nDetect[j][2],
-          nDetect[i][0] * nDetect[j][1] - nDetect[i][1] * nDetect[j][0]
+          normalsForDetection[detectionIndexI][1] * normalsForDetection[detectionIndexJ][2] - normalsForDetection[detectionIndexI][2] * normalsForDetection[detectionIndexJ][1],
+          normalsForDetection[detectionIndexI][2] * normalsForDetection[detectionIndexJ][0] - normalsForDetection[detectionIndexI][0] * normalsForDetection[detectionIndexJ][2],
+          normalsForDetection[detectionIndexI][0] * normalsForDetection[detectionIndexJ][1] - normalsForDetection[detectionIndexI][1] * normalsForDetection[detectionIndexJ][0]
         ];
       }
     }
   }
-  if (minC > Math.cos(featureAngleRad)) return null;
+  if (minimumCosine > Math.cos(featureAngleRad)) return null;
 
-  let len = Math.sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]) || 1;
-  axis[0] /= len; axis[1] /= len; axis[2] /= len;
-  let minD = 1;
-  let maxD = -1;
-  for (let i = 0; i < nDetectCount; i++) {
-    const d = nDetect[i][0] * axis[0] + nDetect[i][1] * axis[1] + nDetect[i][2] * axis[2];
-    if (d < minD) minD = d;
-    if (d > maxD) maxD = d;
+  let axisLength = Math.sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]) || 1;
+  axis[0] /= axisLength; axis[1] /= axisLength; axis[2] /= axisLength;
+  let minimumAxisDot = 1;
+  let maximumAxisDot = -1;
+  for (let detectionIndex = 0; detectionIndex < detectionCount; detectionIndex++) {
+    const axisDotProduct = normalsForDetection[detectionIndex][0] * axis[0] + normalsForDetection[detectionIndex][1] * axis[1] + normalsForDetection[detectionIndex][2] * axis[2];
+    if (axisDotProduct < minimumAxisDot) minimumAxisDot = axisDotProduct;
+    if (axisDotProduct > maximumAxisDot) maximumAxisDot = axisDotProduct;
   }
-  let c = Math.max(Math.abs(minD), Math.abs(maxD));
-  c = Math.sqrt(1 - c * c);
-  const rank = c > Math.cos(featureAngleRad) ? 2 : 3;
+  let spreadCosine = Math.max(Math.abs(minimumAxisDot), Math.abs(maximumAxisDot));
+  spreadCosine = Math.sqrt(1 - spreadCosine * spreadCosine);
+  const rank = spreadCosine > Math.cos(featureAngleRad) ? 2 : 3;
   if (rank === 2) counts.n_edges++;
   else counts.n_corners++;
 
-  const nV = pSvd.length;
-  const A = [];
-  const b = [];
-  for (let i = 0; i < nV; i++) {
-    A.push([nSvd[i][0], nSvd[i][1], nSvd[i][2]]);
-    b.push(pSvd[i][0] * nSvd[i][0] + pSvd[i][1] * nSvd[i][1] + pSvd[i][2] * nSvd[i][2]);
+  const vertexCount = positionsForSvd.length;
+  const matrixA = [];
+  const vectorB = [];
+  for (let vertexIndex = 0; vertexIndex < vertexCount; vertexIndex++) {
+    matrixA.push([normalsForSvd[vertexIndex][0], normalsForSvd[vertexIndex][1], normalsForSvd[vertexIndex][2]]);
+    vectorB.push(positionsForSvd[vertexIndex][0] * normalsForSvd[vertexIndex][0] + positionsForSvd[vertexIndex][1] * normalsForSvd[vertexIndex][1] + positionsForSvd[vertexIndex][2] * normalsForSvd[vertexIndex][2]);
   }
 
-  const point = svdSolve3(A, b, rank === 2);
+  const point = svdSolve3(matrixA, vectorB, rank === 2);
   return { point, rank };
 }
 
-function getPos(vertices, vi) {
-  return [vertices[vi * 6], vertices[vi * 6 + 1], vertices[vi * 6 + 2]];
+function getPos(vertices, vertexIndex) {
+  return [vertices[vertexIndex * 6], vertices[vertexIndex * 6 + 1], vertices[vertexIndex * 6 + 2]];
 }
 
-function triArea(vertices, a, b, c) {
-  const p0 = getPos(vertices, a);
-  const p1 = getPos(vertices, b);
-  const p2 = getPos(vertices, c);
-  const ux = p1[0] - p0[0], uy = p1[1] - p0[1], uz = p1[2] - p0[2];
-  const vx = p2[0] - p0[0], vy = p2[1] - p0[1], vz = p2[2] - p0[2];
-  const cx = uy * vz - uz * vy;
-  const cy = uz * vx - ux * vz;
-  const cz = ux * vy - uy * vx;
-  return Math.sqrt(cx * cx + cy * cy + cz * cz);
+function triArea(vertices, vertexA, vertexB, vertexC) {
+  const position0 = getPos(vertices, vertexA);
+  const position1 = getPos(vertices, vertexB);
+  const position2 = getPos(vertices, vertexC);
+  const edgeUx = position1[0] - position0[0], edgeUy = position1[1] - position0[1], edgeUz = position1[2] - position0[2];
+  const edgeVx = position2[0] - position0[0], edgeVy = position2[1] - position0[1], edgeVz = position2[2] - position0[2];
+  const crossX = edgeUy * edgeVz - edgeUz * edgeVy;
+  const crossY = edgeUz * edgeVx - edgeUx * edgeVz;
+  const crossZ = edgeUx * edgeVy - edgeUy * edgeVx;
+  return Math.sqrt(crossX * crossX + crossY * crossY + crossZ * crossZ);
 }
 
 function flipEdges(vertices, indices, featureVertices) {
-  const key = (a, b) => (a < b ? `${a},${b}` : `${b},${a}`);
-  const edgeToTris = new Map();
-  for (let i = 0; i < indices.length; i += 3) {
-    const a = indices[i], b = indices[i + 1], c = indices[i + 2];
-    for (const [u, v, w] of [[a, b, c], [b, c, a], [c, a, b]]) {
-      const e = key(u, v);
-      if (!edgeToTris.has(e)) edgeToTris.set(e, []);
-      edgeToTris.get(e).push({ tri: i, u, v, opp: w });
+  const makeEdgeKey = (vertexA, vertexB) => (vertexA < vertexB ? `${vertexA},${vertexB}` : `${vertexB},${vertexA}`);
+  const edgeToTriangles = new Map();
+  for (let triangleOffset = 0; triangleOffset < indices.length; triangleOffset += 3) {
+    const vertexA = indices[triangleOffset], vertexB = indices[triangleOffset + 1], vertexC = indices[triangleOffset + 2];
+    for (const [edgeVertexU, edgeVertexV, oppositeVertex] of [[vertexA, vertexB, vertexC], [vertexB, vertexC, vertexA], [vertexC, vertexA, vertexB]]) {
+      const edgeKeyString = makeEdgeKey(edgeVertexU, edgeVertexV);
+      if (!edgeToTriangles.has(edgeKeyString)) edgeToTriangles.set(edgeKeyString, []);
+      edgeToTriangles.get(edgeKeyString).push({ triangleOffset, edgeVertexU, edgeVertexV, oppositeVertex });
     }
   }
 
-  let flips = 0;
-  const minArea = 1e-14;
-  for (const [edgeKeyStr, list] of edgeToTris) {
-    if (list.length !== 2) continue;
-    const [t0, t1] = list;
-    const edgeA = t0.u, edgeB = t0.v;
-    const opp0 = t0.opp, opp1 = t1.opp;
-    if (!featureVertices.has(opp0) || !featureVertices.has(opp1)) continue;
-    if (featureVertices.has(edgeA) || featureVertices.has(edgeB)) continue;
-    const newEdge = key(opp0, opp1);
-    if (newEdge !== edgeKeyStr && edgeToTris.has(newEdge)) continue;
-    if (triArea(vertices, edgeA, opp0, opp1) < minArea) continue;
-    if (triArea(vertices, edgeB, opp1, opp0) < minArea) continue;
-    const i0 = t0.tri, i1 = t1.tri;
-    indices[i0] = edgeA; indices[i0 + 1] = opp0; indices[i0 + 2] = opp1;
-    indices[i1] = edgeB; indices[i1 + 1] = opp1; indices[i1 + 2] = opp0;
-    flips++;
+  let flipCount = 0;
+  const minimumArea = 1e-14;
+  for (const [edgeKeyString, triangleList] of edgeToTriangles) {
+    if (triangleList.length !== 2) continue;
+    const [triangle0, triangle1] = triangleList;
+    const edgeVertexA = triangle0.edgeVertexU, edgeVertexB = triangle0.edgeVertexV;
+    const oppositeVertex0 = triangle0.oppositeVertex, oppositeVertex1 = triangle1.oppositeVertex;
+    if (!featureVertices.has(oppositeVertex0) || !featureVertices.has(oppositeVertex1)) continue;
+    if (featureVertices.has(edgeVertexA) || featureVertices.has(edgeVertexB)) continue;
+    const flippedEdgeKey = makeEdgeKey(oppositeVertex0, oppositeVertex1);
+    if (flippedEdgeKey !== edgeKeyString && edgeToTriangles.has(flippedEdgeKey)) continue;
+    if (triArea(vertices, edgeVertexA, oppositeVertex0, oppositeVertex1) < minimumArea) continue;
+    if (triArea(vertices, edgeVertexB, oppositeVertex1, oppositeVertex0) < minimumArea) continue;
+    const triangleIndex0 = triangle0.triangleOffset, triangleIndex1 = triangle1.triangleOffset;
+    indices[triangleIndex0] = edgeVertexA; indices[triangleIndex0 + 1] = oppositeVertex0; indices[triangleIndex0 + 2] = oppositeVertex1;
+    indices[triangleIndex1] = edgeVertexB; indices[triangleIndex1 + 1] = oppositeVertex1; indices[triangleIndex1 + 2] = oppositeVertex0;
+    flipCount++;
   }
-  if (flips > 0) console.log('Transvoxel Extended: edge flips =', flips);
+  if (flipCount > 0) console.log('Transvoxel Extended: edge flips =', flipCount);
 }
 
 /**
  * Run Transvoxel regular-cell extended extractor.
- * @param {number} res
- * @param {number} iso
+ * @param {number} resolution
+ * @param {number} isovalue
  * @param {(x:number,y:number,z:number)=>number} fieldFn
  * @param {{ featureAngleDeg?: number }} options
  * @returns {{ vertices:number[], indices:number[] }}
  */
-export function runTransvoxelExtended(res, iso, fieldFn, options = {}) {
+export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {}) {
   const featureAngleDeg = options.featureAngleDeg ?? 30;
   const featureAngleRad = (featureAngleDeg * Math.PI) / 180;
 
@@ -155,164 +155,159 @@ export function runTransvoxelExtended(res, iso, fieldFn, options = {}) {
   const counts = { n_edges: 0, n_corners: 0 };
   let nextVertexIndex = 0;
 
-  function getVertex(cx, cy, cz, vertexCode, cornerVal) {
-    const c0 = vertexCode & 0x07;
-    const c1 = (vertexCode >> 3) & 0x07;
-    const [di0, dj0, dk0] = CORNER_DELTA[c0];
-    const [di1, dj1, dk1] = CORNER_DELTA[c1];
-    const i0 = cx + di0, j0 = cy + dj0, k0 = cz + dk0;
-    const i1 = cx + di1, j1 = cy + dj1, k1 = cz + dk1;
-    const key = edgeKey(
-      i0 * (res + 1) * (res + 1) + j0 * (res + 1) + k0,
-      i1 * (res + 1) * (res + 1) + j1 * (res + 1) + k1
+  function getVertex(cellX, cellY, cellZ, vertexCode, cornerValues) {
+    const cornerIndex0 = vertexCode & 0x07;
+    const cornerIndex1 = (vertexCode >> 3) & 0x07;
+    const [deltaI0, deltaJ0, deltaK0] = CORNER_DELTA[cornerIndex0];
+    const [deltaI1, deltaJ1, deltaK1] = CORNER_DELTA[cornerIndex1];
+    const gridI0 = cellX + deltaI0, gridJ0 = cellY + deltaJ0, gridK0 = cellZ + deltaK0;
+    const gridI1 = cellX + deltaI1, gridJ1 = cellY + deltaJ1, gridK1 = cellZ + deltaK1;
+    const edgeKeyValue = edgeKey(
+      gridI0 * (resolution + 1) * (resolution + 1) + gridJ0 * (resolution + 1) + gridK0,
+      gridI1 * (resolution + 1) * (resolution + 1) + gridJ1 * (resolution + 1) + gridK1
     );
-    const existing = vertexMap.get(key);
-    if (existing !== undefined) return existing;
+    const existingVertexIndex = vertexMap.get(edgeKeyValue);
+    if (existingVertexIndex !== undefined) return existingVertexIndex;
 
-    const p0 = [i0 / res, j0 / res, k0 / res];
-    const p1 = [i1 / res, j1 / res, k1 / res];
-    const v0 = cornerVal[c0], v1 = cornerVal[c1];
-    const pos = interpolate(p0, p1, v0, v1, iso);
+    const cornerPosition0 = [gridI0 / resolution, gridJ0 / resolution, gridK0 / resolution];
+    const cornerPosition1 = [gridI1 / resolution, gridJ1 / resolution, gridK1 / resolution];
+    const cornerValue0 = cornerValues[cornerIndex0], cornerValue1 = cornerValues[cornerIndex1];
+    const position = interpolate(cornerPosition0, cornerPosition1, cornerValue0, cornerValue1, isovalue);
 
     // Surface normal (same outward convention as transvoxel.js: negate gradient of field=-SDF)
-    const [gx, gy, gz] = gradientAt(pos[0], pos[1], pos[2], fieldFn);
-    let len = Math.sqrt(gx * gx + gy * gy + gz * gz) || 1;
-    const nx = -gx / len, ny = -gy / len, nz = -gz / len;
+    const [gradientX, gradientY, gradientZ] = gradientAt(position[0], position[1], position[2], fieldFn);
+    let gradientLength = Math.sqrt(gradientX * gradientX + gradientY * gradientY + gradientZ * gradientZ) || 1;
+    const normalX = -gradientX / gradientLength, normalY = -gradientY / gradientLength, normalZ = -gradientZ / gradientLength;
 
     // Limit normals at edge corners for feature detection.
-    const [g0x, g0y, g0z] = gradientAt(p0[0], p0[1], p0[2], fieldFn);
-    const [g1x, g1y, g1z] = gradientAt(p1[0], p1[1], p1[2], fieldFn);
-    const l0 = Math.sqrt(g0x * g0x + g0y * g0y + g0z * g0z) || 1;
-    const l1 = Math.sqrt(g1x * g1x + g1y * g1y + g1z * g1z) || 1;
-    const n0 = [-g0x / l0, -g0y / l0, -g0z / l0];
-    const n1 = [-g1x / l1, -g1y / l1, -g1z / l1];
-    const dot = n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2];
+    const [gradient0X, gradient0Y, gradient0Z] = gradientAt(cornerPosition0[0], cornerPosition0[1], cornerPosition0[2], fieldFn);
+    const [gradient1X, gradient1Y, gradient1Z] = gradientAt(cornerPosition1[0], cornerPosition1[1], cornerPosition1[2], fieldFn);
+    const gradientLength0 = Math.sqrt(gradient0X * gradient0X + gradient0Y * gradient0Y + gradient0Z * gradient0Z) || 1;
+    const gradientLength1 = Math.sqrt(gradient1X * gradient1X + gradient1Y * gradient1Y + gradient1Z * gradient1Z) || 1;
+    const limitNormal0 = [-gradient0X / gradientLength0, -gradient0Y / gradientLength0, -gradient0Z / gradientLength0];
+    const limitNormal1 = [-gradient1X / gradientLength1, -gradient1Y / gradientLength1, -gradient1Z / gradientLength1];
+    const cornerNormalDotProduct = limitNormal0[0] * limitNormal1[0] + limitNormal0[1] * limitNormal1[1] + limitNormal0[2] * limitNormal1[2];
 
-    const idx = nextVertexIndex++;
-    vertexMap.set(key, idx);
-    vertices.push(pos[0], pos[1], pos[2], nx, ny, nz);
-    if (dot < Math.cos(featureAngleRad)) vertexLimitNormals[idx] = [n0, n1];
-    else vertexLimitNormals[idx] = undefined;
-    return idx;
-  }
-
-  function getPosition(vi) {
-    return [vertices[vi * 6], vertices[vi * 6 + 1], vertices[vi * 6 + 2]];
-  }
-  function getNormal(vi) {
-    return [vertices[vi * 6 + 3], vertices[vi * 6 + 4], vertices[vi * 6 + 5]];
-  }
-  function addFeatureVertex(pos, norm) {
-    const idx = nextVertexIndex++;
-    vertices.push(pos[0], pos[1], pos[2], norm[0], norm[1], norm[2]);
-    featureVertices.add(idx);
-    return idx;
+    const newVertexIndex = nextVertexIndex++;
+    vertexMap.set(edgeKeyValue, newVertexIndex);
+    vertices.push(position[0], position[1], position[2], normalX, normalY, normalZ);
+    if (cornerNormalDotProduct < Math.cos(featureAngleRad)) vertexLimitNormals[newVertexIndex] = [limitNormal0, limitNormal1];
+    else vertexLimitNormals[newVertexIndex] = undefined;
+    return newVertexIndex;
   }
 
-  for (let cz = 0; cz < res; cz++) {
-    for (let cy = 0; cy < res; cy++) {
-      for (let cx = 0; cx < res; cx++) {
-        const cornerVal = new Array(8);
-        for (let c = 0; c < 8; c++) {
-          const [di, dj, dk] = CORNER_DELTA[c];
-          cornerVal[c] = sampleField(cx + di, cy + dj, cz + dk, res, fieldFn);
+  function getPosition(vertexIndex) {
+    return [vertices[vertexIndex * 6], vertices[vertexIndex * 6 + 1], vertices[vertexIndex * 6 + 2]];
+  }
+  function getNormal(vertexIndex) {
+    return [vertices[vertexIndex * 6 + 3], vertices[vertexIndex * 6 + 4], vertices[vertexIndex * 6 + 5]];
+  }
+  function addFeatureVertex(position, normal) {
+    const newVertexIndex = nextVertexIndex++;
+    vertices.push(position[0], position[1], position[2], normal[0], normal[1], normal[2]);
+    featureVertices.add(newVertexIndex);
+    return newVertexIndex;
+  }
+
+  for (let cellZ = 0; cellZ < resolution; cellZ++) {
+    for (let cellY = 0; cellY < resolution; cellY++) {
+      for (let cellX = 0; cellX < resolution; cellX++) {
+        const cornerValues = new Array(8);
+        for (let cornerIndex = 0; cornerIndex < 8; cornerIndex++) {
+          const [deltaI, deltaJ, deltaK] = CORNER_DELTA[cornerIndex];
+          cornerValues[cornerIndex] = sampleField(cellX + deltaI, cellY + deltaJ, cellZ + deltaK, resolution, fieldFn);
         }
         let caseIndex = 0;
-        for (let c = 0; c < 8; c++) if (cornerVal[c] > iso) caseIndex |= (1 << c);
+        for (let cornerIndex = 0; cornerIndex < 8; cornerIndex++) if (cornerValues[cornerIndex] > isovalue) caseIndex |= (1 << cornerIndex);
         if (caseIndex === 0 || caseIndex === 255) continue;
 
         const vertexArray = regularVertexData[caseIndex];
-        const row = regularCellPolyTable[caseIndex];
-        const n_components = row[0];
+        const tableRow = regularCellPolyTable[caseIndex];
+        const componentCount = tableRow[0];
 
         // Build per-case sample vertex indices on demand.
         const samples = new Array(12);
-        let maxIndex = 0;
-        let tmpOffset = 1;
-        for (let comp = 0; comp < n_components; comp++) {
-          const n_vertices = row[tmpOffset++];
-          for (let i = 0; i < n_vertices; i++) {
-            const idx = row[tmpOffset + i];
-            if (idx > maxIndex) maxIndex = idx;
+        let maximumVertexIndex = 0;
+        let scanOffset = 1;
+        for (let componentIndex = 0; componentIndex < componentCount; componentIndex++) {
+          const vertexCountInComponent = tableRow[scanOffset++];
+          for (let vertexSlot = 0; vertexSlot < vertexCountInComponent; vertexSlot++) {
+            const tableVertexIndex = tableRow[scanOffset + vertexSlot];
+            if (tableVertexIndex > maximumVertexIndex) maximumVertexIndex = tableVertexIndex;
           }
-          tmpOffset += n_vertices;
+          scanOffset += vertexCountInComponent;
         }
-        for (let i = 0; i <= maxIndex; i++) {
-          const code = vertexArray[i];
-          samples[i] = getVertex(cx, cy, cz, code, cornerVal);
+        for (let sampleSlot = 0; sampleSlot <= maximumVertexIndex; sampleSlot++) {
+          const vertexCode = vertexArray[sampleSlot];
+          samples[sampleSlot] = getVertex(cellX, cellY, cellZ, vertexCode, cornerValues);
         }
 
-        let offset = 1;
-        for (let comp = 0; comp < n_components; comp++) {
-          let n_vertices = row[offset++];
-          const raw = [];
-          for (let i = 0; i < n_vertices; i++) raw.push(samples[row[offset + i]]);
-          offset += n_vertices;
+        let tableOffset = 1;
+        for (let componentIndex = 0; componentIndex < componentCount; componentIndex++) {
+          const vertexCountInPolygon = tableRow[tableOffset++];
+          const polygonVertexIndices = [];
+          for (let vertexSlot = 0; vertexSlot < vertexCountInPolygon; vertexSlot++) polygonVertexIndices.push(samples[tableRow[tableOffset + vertexSlot]]);
+          tableOffset += vertexCountInPolygon;
 
-          // regularCellPolyTable stores closed loops (last index repeats first).
-          let polyIndices = raw;
-          if (raw.length >= 4 && raw[0] === raw[raw.length - 1]) {
-            polyIndices = raw.slice(0, raw.length - 1);
+          // regularCellPolyTable stores open n-gons (no repeated closing vertex).
+          if (vertexCountInPolygon < 3 || vertexCountInPolygon > 7) continue;
+
+          const centerOfGravity = [0, 0, 0];
+          for (let vertexSlot = 0; vertexSlot < vertexCountInPolygon; vertexSlot++) {
+            const position = getPosition(polygonVertexIndices[vertexSlot]);
+            centerOfGravity[0] += position[0]; centerOfGravity[1] += position[1]; centerOfGravity[2] += position[2];
           }
-          n_vertices = polyIndices.length;
-          if (n_vertices < 3 || n_vertices > 7) continue;
+          centerOfGravity[0] /= vertexCountInPolygon; centerOfGravity[1] /= vertexCountInPolygon; centerOfGravity[2] /= vertexCountInPolygon;
 
-          const cog = [0, 0, 0];
-          for (let i = 0; i < n_vertices; i++) {
-            const p = getPosition(polyIndices[i]);
-            cog[0] += p[0]; cog[1] += p[1]; cog[2] += p[2];
-          }
-          cog[0] /= n_vertices; cog[1] /= n_vertices; cog[2] /= n_vertices;
-
-          const pDetect = [];
-          const nDetect = [];
-          for (let i = 0; i < n_vertices; i++) {
-            const vi = polyIndices[i];
-            const p = getPosition(vi);
-            const limits = vertexLimitNormals[vi];
-            if (limits) {
-              for (const norm of limits) {
-                pDetect.push([p[0] - cog[0], p[1] - cog[1], p[2] - cog[2]]);
-                nDetect.push(norm);
+          const positionsForDetection = [];
+          const normalsForDetection = [];
+          for (let vertexSlot = 0; vertexSlot < vertexCountInPolygon; vertexSlot++) {
+            const polygonVertexIndex = polygonVertexIndices[vertexSlot];
+            const position = getPosition(polygonVertexIndex);
+            const limitNormals = vertexLimitNormals[polygonVertexIndex];
+            if (limitNormals) {
+              for (const limitNormal of limitNormals) {
+                positionsForDetection.push([position[0] - centerOfGravity[0], position[1] - centerOfGravity[1], position[2] - centerOfGravity[2]]);
+                normalsForDetection.push(limitNormal);
               }
             } else {
-              pDetect.push([p[0] - cog[0], p[1] - cog[1], p[2] - cog[2]]);
-              nDetect.push(getNormal(vi));
+              positionsForDetection.push([position[0] - centerOfGravity[0], position[1] - centerOfGravity[1], position[2] - centerOfGravity[2]]);
+              normalsForDetection.push(getNormal(polygonVertexIndex));
             }
           }
 
-          const pSvd = [];
-          const nSvd = [];
-          for (let i = 0; i < n_vertices; i++) {
-            const p = getPosition(polyIndices[i]);
-            pSvd.push([p[0] - cog[0], p[1] - cog[1], p[2] - cog[2]]);
-            nSvd.push(getNormal(polyIndices[i]));
+          const positionsForSvd = [];
+          const normalsForSvd = [];
+          for (let vertexSlot = 0; vertexSlot < vertexCountInPolygon; vertexSlot++) {
+            const position = getPosition(polygonVertexIndices[vertexSlot]);
+            positionsForSvd.push([position[0] - centerOfGravity[0], position[1] - centerOfGravity[1], position[2] - centerOfGravity[2]]);
+            normalsForSvd.push(getNormal(polygonVertexIndices[vertexSlot]));
           }
 
-          const feature = findFeaturePoint(pDetect, nDetect, featureAngleRad, counts, pSvd, nSvd);
-          if (feature) {
-            const world = [
-              feature.point[0] + cog[0],
-              feature.point[1] + cog[1],
-              feature.point[2] + cog[2]
+          const featureResult = findFeaturePoint(positionsForDetection, normalsForDetection, featureAngleRad, counts, positionsForSvd, normalsForSvd);
+          if (featureResult) {
+            const worldPosition = [
+              featureResult.point[0] + centerOfGravity[0],
+              featureResult.point[1] + centerOfGravity[1],
+              featureResult.point[2] + centerOfGravity[2]
             ];
-            let nx = 0, ny = 0, nz = 0;
-            for (let i = 0; i < nSvd.length; i++) {
-              nx += nSvd[i][0]; ny += nSvd[i][1]; nz += nSvd[i][2];
+            let averageNormalX = 0, averageNormalY = 0, averageNormalZ = 0;
+            for (let vertexSlot = 0; vertexSlot < normalsForSvd.length; vertexSlot++) {
+              averageNormalX += normalsForSvd[vertexSlot][0]; averageNormalY += normalsForSvd[vertexSlot][1]; averageNormalZ += normalsForSvd[vertexSlot][2];
             }
-            const ln = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-            nx /= ln; ny /= ln; nz /= ln;
-            const fv = addFeatureVertex(world, [nx, ny, nz]);
-            for (let j = 0; j < n_vertices; j++) {
-              indices.push(polyIndices[j], polyIndices[(j + 1) % n_vertices], fv);
+            const averageNormalLength = Math.sqrt(averageNormalX * averageNormalX + averageNormalY * averageNormalY + averageNormalZ * averageNormalZ) || 1;
+            averageNormalX /= averageNormalLength; averageNormalY /= averageNormalLength; averageNormalZ /= averageNormalLength;
+            const featureVertexIndex = addFeatureVertex(worldPosition, [averageNormalX, averageNormalY, averageNormalZ]);
+            for (let vertexSlot = 0; vertexSlot < vertexCountInPolygon; vertexSlot++) {
+              indices.push(polygonVertexIndices[vertexSlot], polygonVertexIndices[(vertexSlot + 1) % vertexCountInPolygon], featureVertexIndex);
             }
           } else {
-            const tri = polyTable[n_vertices];
-            for (let j = 0; tri[j] !== -1; j += 3) {
+            const triangulationTemplate = polyTable[vertexCountInPolygon];
+            for (let triSlot = 0; triangulationTemplate[triSlot] !== -1; triSlot += 3) {
               indices.push(
-                polyIndices[tri[j]],
-                polyIndices[tri[j + 1]],
-                polyIndices[tri[j + 2]]
+                polygonVertexIndices[triangulationTemplate[triSlot]],
+                polygonVertexIndices[triangulationTemplate[triSlot + 1]],
+                polygonVertexIndices[triangulationTemplate[triSlot + 2]]
               );
             }
           }

@@ -34,9 +34,12 @@ out.push('#include "transvoxel_extended_tables.h"');
 out.push('');
 out.push('namespace transvoxel {');
 out.push('');
+const RCP_ROW_SIZE = 32;
 out.push('const int regularCellPolyTable[kRegularCellPolyTableSize][kRegularCellPolyRowSize] = {');
 rcp.forEach((row) => {
-  out.push('  { ' + row.join(', ') + ' },');
+  const padded = row.slice(0, RCP_ROW_SIZE);
+  while (padded.length < RCP_ROW_SIZE) padded.push(-1);
+  out.push('  { ' + padded.join(', ') + ' },');
 });
 out.push('};');
 out.push('');

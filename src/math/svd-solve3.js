@@ -1,244 +1,134 @@
 /**
  * Self-contained least-squares solve for the IsoEx feature-point case.
  * Solves min ||A x - b|| for x in R³. A is m×3 (rows = normals), b length m.
- * Uses the same algorithm as svd-isoex: SVD of A (Golub-Reinsch), then x = V inv(S) U' b.
- * No imports. Contained in this file only — matches previous (svd-isoex) results.
+ * Uses normal equations (A'A x = A'b) and 3×3 symmetric eigendecomposition.
+ * Set USE_ISOEX_SVD = true to use the known-working Golub-Reinsch SVD (svd-isoex) instead.
  */
 
-const N = 3;
+import { svd_decomp, svd_backsub } from './svd-isoex.js';
 
-function dmax(a, b) {
-  return a > b ? a : b;
-}
+const USE_ISOEX_SVD = true; // temporary: use svd-isoex (Golub-Reinsch) instead of 3×3 eigen
 
-function sign(a, b) {
-  return b >= 0 ? Math.abs(a) : -Math.abs(a);
-}
+const EPS = 1e-10;
 
-function dpythag(a, b) {
-  const absa = Math.abs(a);
-  const absb = Math.abs(b);
-  if (absa > absb) return absa * Math.sqrt(1 + (absb / absa) ** 2);
-  return absb === 0 ? 0 : absb * Math.sqrt(1 + (absa / absb) ** 2);
-}
-
-/**
- * SVD of A (m×3). A modified in place: first 3 columns become U. S length 3, V 3×3.
- * Golub-Reinsch (Numerical Recipes) port, n=3 only.
- */
-function svd_decomp(A, S, V) {
+/** Solve using IsoEx Golub-Reinsch SVD (known working). A copied so svd_decomp can overwrite. */
+function svdSolve3IsoEx(A, b, rank2) {
   const m = A.length;
-  const n = N;
-  const rv1 = [0, 0, 0];
-  let l = 0;
-  let anorm = 0;
-  let scale = 0;
-  let g = 0;
-  let s = 0;
-
-  for (let i = 0; i < n; i++) {
-    l = i + 1;
-    rv1[i] = scale * g;
-    g = 0;
-    scale = 0;
-    s = 0;
-    if (i < m) {
-      for (let k = i; k < m; k++) scale += Math.abs(A[k][i]);
-      if (scale !== 0) {
-        for (let k = i; k < m; k++) {
-          A[k][i] /= scale;
-          s += A[k][i] * A[k][i];
-        }
-        const f = A[i][i];
-        g = -sign(Math.sqrt(s), f);
-        const h = f * g - s;
-        A[i][i] = f - g;
-        for (let j = l; j < n; j++) {
-          s = 0;
-          for (let k = i; k < m; k++) s += A[k][i] * A[k][j];
-          const f2 = s / h;
-          for (let k = i; k < m; k++) A[k][j] += f2 * A[k][i];
-        }
-        for (let k = i; k < m; k++) A[k][i] *= scale;
-      }
-    }
-    S[i] = scale * g;
-    g = 0;
-    scale = 0;
-    s = 0;
-    if (i < m && i !== n - 1) {
-      for (let k = l; k < n; k++) scale += Math.abs(A[i][k]);
-      if (scale !== 0) {
-        for (let k = l; k < n; k++) {
-          A[i][k] /= scale;
-          s += A[i][k] * A[i][k];
-        }
-        const f = A[i][l];
-        g = -sign(Math.sqrt(s), f);
-        const h = f * g - s;
-        A[i][l] = f - g;
-        for (let k = l; k < n; k++) rv1[k] = A[i][k] / h;
-        for (let j = l; j < m; j++) {
-          s = 0;
-          for (let k = l; k < n; k++) s += A[j][k] * A[i][k];
-          for (let k = l; k < n; k++) A[j][k] += s * rv1[k];
-        }
-        for (let k = l; k < n; k++) A[i][k] *= scale;
-      }
-    }
-    anorm = dmax(anorm, Math.abs(S[i]) + Math.abs(rv1[i]));
+  const Acopy = A.map(row => [row[0], row[1], row[2]]);
+  const S = [0, 0, 0];
+  const V = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  svd_decomp(Acopy, S, V);
+  if (rank2) {
+    let minIdx = 0;
+    for (let i = 1; i < 3; i++) if (S[i] < S[minIdx]) minIdx = i;
+    S[minIdx] = 0;
   }
-
-  for (let i = n - 1; i >= 0; i--) {
-    if (i < n - 1) {
-      if (g !== 0) {
-        for (let j = l; j < n; j++) V[j][i] = (A[i][j] / A[i][l]) / g;
-        for (let j = l; j < n; j++) {
-          s = 0;
-          for (let k = l; k < n; k++) s += A[i][k] * V[k][j];
-          for (let k = l; k < n; k++) V[k][j] += s * V[k][i];
-        }
-      }
-      for (let j = l; j < n; j++) V[i][j] = V[j][i] = 0;
-    }
-    V[i][i] = 1;
-    g = rv1[i];
-    l = i;
-  }
-
-  const minmn = m < n ? m : n;
-  for (let i = minmn - 1; i >= 0; i--) {
-    l = i + 1;
-    g = S[i];
-    for (let j = l; j < n; j++) A[i][j] = 0;
-    if (g !== 0) {
-      g = 1 / g;
-      for (let j = l; j < n; j++) {
-        s = 0;
-        for (let k = l; k < m; k++) s += A[k][i] * A[k][j];
-        const f = (s / A[i][i]) * g;
-        for (let k = i; k < m; k++) A[k][j] += f * A[k][i];
-      }
-      for (let j = i; j < m; j++) A[j][i] *= g;
-    } else {
-      for (let j = i; j < m; j++) A[j][i] = 0;
-    }
-    A[i][i] += 1;
-  }
-
-  for (let k = n - 1; k >= 0; k--) {
-    let its = 0;
-    for (; its < 100; its++) {
-      let flag = 1;
-      let nm = 0;
-      for (l = k; l >= 0; l--) {
-        nm = l - 1;
-        if (Math.abs(rv1[l]) + anorm === anorm) {
-          flag = 0;
-          break;
-        }
-        if (nm >= 0 && Math.abs(S[nm]) + anorm === anorm) break;
-      }
-      if (flag) {
-        let c = 0, sn = 1;
-        for (let i = l; i <= k; i++) {
-          const f = sn * rv1[i];
-          rv1[i] = c * rv1[i];
-          if (Math.abs(f) + anorm === anorm) break;
-          g = S[i];
-          const h = dpythag(f, g);
-          S[i] = h;
-          const invH = 1 / h;
-          c = g * invH;
-          sn = -f * invH;
-          for (let j = 0; j < m; j++) {
-            const y = A[j][nm];
-            const z = A[j][i];
-            A[j][nm] = y * c + z * sn;
-            A[j][i] = z * c - y * sn;
-          }
-        }
-      }
-      let z = S[k];
-      if (l === k) {
-        if (z < 0) {
-          S[k] = -z;
-          for (let j = 0; j < n; j++) V[j][k] = -V[j][k];
-        }
-        break;
-      }
-      if (its === 99) break;
-      let x = S[l];
-      nm = k - 1;
-      let y = S[nm];
-      g = rv1[nm];
-      let h = rv1[k];
-      let f = ((y - z) * (y + z) + (g - h) * (g + h)) / (2 * h * y);
-      g = dpythag(f, 1);
-      f = ((x - z) * (x + z) + h * ((y / (f + sign(g, f))) - h)) / x;
-      let c = 1, sn = 1;
-      for (let j = l; j <= nm; j++) {
-        const ii = j + 1;
-        g = rv1[ii];
-        y = S[ii];
-        h = sn * g;
-        g = c * g;
-        z = dpythag(f, h);
-        rv1[j] = z;
-        c = f / z;
-        sn = h / z;
-        f = x * c + g * sn;
-        g = g * c - x * sn;
-        h = y * sn;
-        y *= c;
-        for (let jj = 0; jj < n; jj++) {
-          x = V[jj][j];
-          z = V[jj][ii];
-          V[jj][j] = x * c + z * sn;
-          V[jj][ii] = z * c - x * sn;
-        }
-        z = dpythag(f, h);
-        S[j] = z;
-        if (z !== 0) {
-          z = 1 / z;
-          c = f * z;
-          sn = h * z;
-        }
-        f = c * g + sn * y;
-        x = c * y - sn * g;
-        for (let jj = 0; jj < m; jj++) {
-          y = A[jj][j];
-          z = A[jj][ii];
-          A[jj][j] = y * c + z * sn;
-          A[jj][ii] = z * c - y * sn;
-        }
-      }
-      rv1[l] = 0;
-      rv1[k] = f;
-      S[k] = x;
-    }
-  }
+  const x = [0, 0, 0];
+  svd_backsub(Acopy, S, V, b, x);
+  return x;
 }
 
-/**
- * Backsub: x = V * inv(S) * U^T * b. A holds U (m×3), S length 3, V 3×3, b length m, x length 3.
- */
-function svd_backsub(A, S, V, b, x) {
+function dot3(a, b) {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function cross3(a, b, out) {
+  out[0] = a[1] * b[2] - a[2] * b[1];
+  out[1] = a[2] * b[0] - a[0] * b[2];
+  out[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+function norm3(v) {
+  const n = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+  return n < EPS ? 0 : n;
+}
+
+function scale3(v, s, out) {
+  out[0] = v[0] * s;
+  out[1] = v[1] * s;
+  out[2] = v[2] * s;
+}
+
+// Form ATA (3×3 symmetric) and ATb (3). A[row][col], b[row].
+function formNormalEquations(A, b, ATA, ATb) {
   const m = A.length;
-  const n = N;
-  const tmp = [0, 0, 0];
-  for (let j = 0; j < n; j++) {
-    let s = 0;
-    if (S[j] !== 0) {
-      for (let i = 0; i < m; i++) s += A[i][j] * b[i];
-      s /= S[j];
-    }
-    tmp[j] = s;
+  ATA[0] = 0; ATA[1] = 0; ATA[2] = 0;
+  ATA[3] = 0; ATA[4] = 0; ATA[5] = 0;
+  ATA[6] = 0; ATA[7] = 0; ATA[8] = 0;
+  ATb[0] = 0; ATb[1] = 0; ATb[2] = 0;
+  for (let k = 0; k < m; k++) {
+    const a0 = A[k][0], a1 = A[k][1], a2 = A[k][2];
+    const bk = b[k];
+    ATA[0] += a0 * a0; ATA[1] += a0 * a1; ATA[2] += a0 * a2;
+    ATA[4] += a1 * a1; ATA[5] += a1 * a2;
+    ATA[8] += a2 * a2;
+    ATb[0] += a0 * bk; ATb[1] += a1 * bk; ATb[2] += a2 * bk;
   }
-  for (let j = 0; j < n; j++) {
-    let s = 0;
-    for (let jj = 0; jj < n; jj++) s += V[j][jj] * tmp[jj];
-    x[j] = s;
+  ATA[3] = ATA[1]; ATA[6] = ATA[2]; ATA[7] = ATA[5];
+}
+
+// 3×3 symmetric eigendecomposition. M stored row-major [0..8]. Writes eig[0..2] and V as 3 columns (V[0], V[1], V[2] are vec3).
+// Eigenvalues in descending order; eigenvectors normalized.
+function eigen3x3Sym(M, eig, V) {
+  const trace = M[0] + M[4] + M[8];
+  const c2 = M[0] * M[4] - M[1] * M[3] + M[0] * M[8] - M[2] * M[6] + M[4] * M[8] - M[5] * M[7];
+  const det = M[0] * (M[4] * M[8] - M[5] * M[7]) - M[1] * (M[3] * M[8] - M[5] * M[6]) + M[2] * (M[3] * M[7] - M[4] * M[6]);
+  // t³ - trace·t² + c2·t - det = 0  =>  t³ + a t² + b t + c = 0 with a=-trace, b=c2, c=-det
+  const a = -trace, b = c2, c = -det;
+  const p = b - a * a / 3, q = c - a * b / 3 + 2 * a * a * a / 27;
+  let y0, y1, y2;
+  if (p > 0) {
+    // Degenerate (one real root): use triple root at trace/3
+    const t = trace / 3;
+    eig[0] = t; eig[1] = t; eig[2] = t;
+    V[0][0] = 1; V[0][1] = 0; V[0][2] = 0;
+    V[1][0] = 0; V[1][1] = 1; V[1][2] = 0;
+    V[2][0] = 0; V[2][1] = 0; V[2][2] = 1;
+    return;
+  }
+  if (Math.abs(p) < EPS) {
+    const r = Math.cbrt(-q);
+    y0 = r; y1 = r; y2 = r;
+  } else {
+    const sq = Math.sqrt(-p / 3);
+    const cap = sq < EPS ? 0 : Math.acos(Math.max(-1, Math.min(1, (3 * q / (2 * p)) / sq))) / 3;
+    y0 = 2 * sq * Math.cos(cap);
+    y1 = 2 * sq * Math.cos(cap - 2 * Math.PI / 3);
+    y2 = 2 * sq * Math.cos(cap + 2 * Math.PI / 3);
+  }
+  const t0 = y0 - a / 3, t1 = y1 - a / 3, t2 = y2 - a / 3;
+  // Sort descending
+  if (t0 >= t1 && t0 >= t2) {
+    eig[0] = t0;
+    if (t1 >= t2) { eig[1] = t1; eig[2] = t2; } else { eig[1] = t2; eig[2] = t1; }
+  } else if (t1 >= t0 && t1 >= t2) {
+    eig[0] = t1;
+    if (t0 >= t2) { eig[1] = t0; eig[2] = t2; } else { eig[1] = t2; eig[2] = t0; }
+  } else {
+    eig[0] = t2;
+    if (t0 >= t1) { eig[1] = t0; eig[2] = t1; } else { eig[1] = t1; eig[2] = t0; }
+  }
+  // Eigenvectors: (M - λI) v = 0 => take two rows, cross product
+  const row0 = [M[0], M[1], M[2]];
+  const row1 = [M[3], M[4], M[5]];
+  const row2 = [M[6], M[7], M[8]];
+  for (let i = 0; i < 3; i++) {
+    const lam = eig[i];
+    row0[0] = M[0] - lam; row0[1] = M[1]; row0[2] = M[2];
+    row1[0] = M[3]; row1[1] = M[4] - lam; row1[2] = M[5];
+    row2[0] = M[6]; row2[1] = M[7]; row2[2] = M[8] - lam;
+    cross3(row0, row1, V[i]);
+    let n = norm3(V[i]);
+    if (n < EPS) {
+      cross3(row1, row2, V[i]);
+      n = norm3(V[i]);
+    }
+    if (n < EPS) {
+      cross3(row0, row2, V[i]);
+      n = norm3(V[i]);
+    }
+    if (n >= EPS) scale3(V[i], 1 / n, V[i]);
+    else { V[i][0] = i === 0 ? 1 : 0; V[i][1] = i === 1 ? 1 : 0; V[i][2] = i === 2 ? 1 : 0; }
   }
 }
 
@@ -250,25 +140,32 @@ function svd_backsub(A, S, V, b, x) {
  * @returns {number[]} x - length 3
  */
 export function svdSolve3(A, b, rank2) {
-  const ACopy = A.map((row) => [row[0], row[1], row[2]]);
-  const S = [0, 0, 0];
-  const V = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-  svd_decomp(ACopy, S, V);
-
-  if (rank2) {
-    const srank = Math.min(A.length, 3);
-    let smin = Number.POSITIVE_INFINITY;
-    let sminid = 0;
-    for (let i = 0; i < srank; i++) {
-      if (S[i] < smin) {
-        smin = S[i];
-        sminid = i;
-      }
-    }
-    S[sminid] = 0;
+  if (USE_ISOEX_SVD) {
+    return svdSolve3IsoEx(A, b, rank2);
   }
+  const m = A.length;
+  const ATA = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+  const ATb = [0, 0, 0];
+  formNormalEquations(A, b, ATA, ATb);
 
-  const x = [0, 0, 0];
-  svd_backsub(ACopy, S, V, b, x);
+  const eig = [0, 0, 0];
+  const V = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  eigen3x3Sym(ATA, eig, V);
+
+  // Pseudo-inverse: x = V * diag(1/λ) * V' * ATb. For rank2, zero smallest λ (eig[2] after sort).
+  if (rank2) eig[2] = 0;
+
+  const w0 = dot3(V[0], ATb);
+  const w1 = dot3(V[1], ATb);
+  const w2 = dot3(V[2], ATb);
+  const inv0 = eig[0] > EPS ? 1 / eig[0] : 0;
+  const inv1 = eig[1] > EPS ? 1 / eig[1] : 0;
+  const inv2 = eig[2] > EPS ? 1 / eig[2] : 0;
+
+  const x = [
+    V[0][0] * (w0 * inv0) + V[1][0] * (w1 * inv1) + V[2][0] * (w2 * inv2),
+    V[0][1] * (w0 * inv0) + V[1][1] * (w1 * inv1) + V[2][1] * (w2 * inv2),
+    V[0][2] * (w0 * inv0) + V[1][2] * (w1 * inv1) + V[2][2] * (w2 * inv2)
+  ];
   return x;
 }
