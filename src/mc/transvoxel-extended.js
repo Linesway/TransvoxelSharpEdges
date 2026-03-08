@@ -40,19 +40,22 @@ function interpolate(position0, position1, value0, value1, isovalue) {
   ];
 }
 
-function findFeaturePoint(positionsForDetection, normalsForDetection, featureAngleRad, counts, positionsForSvd, normalsForSvd) {
-  const detectionCount = positionsForDetection.length;
+/**
+ * IsoEx-style: one position and one normal per polygon vertex. Same data for detection and SVD.
+ */
+function findFeaturePoint(positionsCentered, normals, featureAngleRad, counts) {
+  const vertexCount = positionsCentered.length;
   let minimumCosine = 1;
   let axis = [0, 0, 0];
-  for (let detectionIndexI = 0; detectionIndexI < detectionCount; detectionIndexI++) {
-    for (let detectionIndexJ = 0; detectionIndexJ < detectionCount; detectionIndexJ++) {
-      const normalDotProduct = normalsForDetection[detectionIndexI][0] * normalsForDetection[detectionIndexJ][0] + normalsForDetection[detectionIndexI][1] * normalsForDetection[detectionIndexJ][1] + normalsForDetection[detectionIndexI][2] * normalsForDetection[detectionIndexJ][2];
+  for (let i = 0; i < vertexCount; i++) {
+    for (let j = 0; j < vertexCount; j++) {
+      const normalDotProduct = normals[i][0] * normals[j][0] + normals[i][1] * normals[j][1] + normals[i][2] * normals[j][2];
       if (normalDotProduct < minimumCosine) {
         minimumCosine = normalDotProduct;
         axis = [
-          normalsForDetection[detectionIndexI][1] * normalsForDetection[detectionIndexJ][2] - normalsForDetection[detectionIndexI][2] * normalsForDetection[detectionIndexJ][1],
-          normalsForDetection[detectionIndexI][2] * normalsForDetection[detectionIndexJ][0] - normalsForDetection[detectionIndexI][0] * normalsForDetection[detectionIndexJ][2],
-          normalsForDetection[detectionIndexI][0] * normalsForDetection[detectionIndexJ][1] - normalsForDetection[detectionIndexI][1] * normalsForDetection[detectionIndexJ][0]
+          normals[i][1] * normals[j][2] - normals[i][2] * normals[j][1],
+          normals[i][2] * normals[j][0] - normals[i][0] * normals[j][2],
+          normals[i][0] * normals[j][1] - normals[i][1] * normals[j][0]
         ];
       }
     }
@@ -63,8 +66,8 @@ function findFeaturePoint(positionsForDetection, normalsForDetection, featureAng
   axis[0] /= axisLength; axis[1] /= axisLength; axis[2] /= axisLength;
   let minimumAxisDot = 1;
   let maximumAxisDot = -1;
-  for (let detectionIndex = 0; detectionIndex < detectionCount; detectionIndex++) {
-    const axisDotProduct = normalsForDetection[detectionIndex][0] * axis[0] + normalsForDetection[detectionIndex][1] * axis[1] + normalsForDetection[detectionIndex][2] * axis[2];
+  for (let i = 0; i < vertexCount; i++) {
+    const axisDotProduct = normals[i][0] * axis[0] + normals[i][1] * axis[1] + normals[i][2] * axis[2];
     if (axisDotProduct < minimumAxisDot) minimumAxisDot = axisDotProduct;
     if (axisDotProduct > maximumAxisDot) maximumAxisDot = axisDotProduct;
   }
@@ -74,12 +77,11 @@ function findFeaturePoint(positionsForDetection, normalsForDetection, featureAng
   if (rank === 2) counts.n_edges++;
   else counts.n_corners++;
 
-  const vertexCount = positionsForSvd.length;
   const matrixA = [];
   const vectorB = [];
-  for (let vertexIndex = 0; vertexIndex < vertexCount; vertexIndex++) {
-    matrixA.push([normalsForSvd[vertexIndex][0], normalsForSvd[vertexIndex][1], normalsForSvd[vertexIndex][2]]);
-    vectorB.push(positionsForSvd[vertexIndex][0] * normalsForSvd[vertexIndex][0] + positionsForSvd[vertexIndex][1] * normalsForSvd[vertexIndex][1] + positionsForSvd[vertexIndex][2] * normalsForSvd[vertexIndex][2]);
+  for (let i = 0; i < vertexCount; i++) {
+    matrixA.push([normals[i][0], normals[i][1], normals[i][2]]);
+    vectorB.push(positionsCentered[i][0] * normals[i][0] + positionsCentered[i][1] * normals[i][1] + positionsCentered[i][2] * normals[i][2]);
   }
 
   const point = svdSolve3(matrixA, vectorB, rank === 2);
@@ -259,32 +261,16 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
           }
           centerOfGravity[0] /= vertexCountInPolygon; centerOfGravity[1] /= vertexCountInPolygon; centerOfGravity[2] /= vertexCountInPolygon;
 
-          const positionsForDetection = [];
-          const normalsForDetection = [];
-          for (let vertexSlot = 0; vertexSlot < vertexCountInPolygon; vertexSlot++) {
-            const polygonVertexIndex = polygonVertexIndices[vertexSlot];
-            const position = getPosition(polygonVertexIndex);
-            const limitNormals = vertexLimitNormals[polygonVertexIndex];
-            if (limitNormals) {
-              for (const limitNormal of limitNormals) {
-                positionsForDetection.push([position[0] - centerOfGravity[0], position[1] - centerOfGravity[1], position[2] - centerOfGravity[2]]);
-                normalsForDetection.push(limitNormal);
-              }
-            } else {
-              positionsForDetection.push([position[0] - centerOfGravity[0], position[1] - centerOfGravity[1], position[2] - centerOfGravity[2]]);
-              normalsForDetection.push(getNormal(polygonVertexIndex));
-            }
-          }
-
-          const positionsForSvd = [];
-          const normalsForSvd = [];
+          // IsoEx: one position and one normal per polygon vertex (mesh_.point, mesh_.normal).
+          const positionsCentered = [];
+          const normals = [];
           for (let vertexSlot = 0; vertexSlot < vertexCountInPolygon; vertexSlot++) {
             const position = getPosition(polygonVertexIndices[vertexSlot]);
-            positionsForSvd.push([position[0] - centerOfGravity[0], position[1] - centerOfGravity[1], position[2] - centerOfGravity[2]]);
-            normalsForSvd.push(getNormal(polygonVertexIndices[vertexSlot]));
+            positionsCentered.push([position[0] - centerOfGravity[0], position[1] - centerOfGravity[1], position[2] - centerOfGravity[2]]);
+            normals.push(getNormal(polygonVertexIndices[vertexSlot]));
           }
 
-          const featureResult = findFeaturePoint(positionsForDetection, normalsForDetection, featureAngleRad, counts, positionsForSvd, normalsForSvd);
+          const featureResult = findFeaturePoint(positionsCentered, normals, featureAngleRad, counts);
           if (featureResult) {
             const worldPosition = [
               featureResult.point[0] + centerOfGravity[0],
@@ -292,8 +278,8 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
               featureResult.point[2] + centerOfGravity[2]
             ];
             let averageNormalX = 0, averageNormalY = 0, averageNormalZ = 0;
-            for (let vertexSlot = 0; vertexSlot < normalsForSvd.length; vertexSlot++) {
-              averageNormalX += normalsForSvd[vertexSlot][0]; averageNormalY += normalsForSvd[vertexSlot][1]; averageNormalZ += normalsForSvd[vertexSlot][2];
+            for (let vertexSlot = 0; vertexSlot < normals.length; vertexSlot++) {
+              averageNormalX += normals[vertexSlot][0]; averageNormalY += normals[vertexSlot][1]; averageNormalZ += normals[vertexSlot][2];
             }
             const averageNormalLength = Math.sqrt(averageNormalX * averageNormalX + averageNormalY * averageNormalY + averageNormalZ * averageNormalZ) || 1;
             averageNormalX /= averageNormalLength; averageNormalY /= averageNormalLength; averageNormalZ /= averageNormalLength;
