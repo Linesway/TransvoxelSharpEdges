@@ -104,8 +104,49 @@ function triArea(vertices, vertexA, vertexB, vertexC) {
   return Math.sqrt(crossX * crossX + crossY * crossY + crossZ * crossZ);
 }
 
+/**
+It searches for this pattern:
+
+two triangles share an edge
+the two vertices opposite that shared edge are both feature vertices
+the shared edge’s endpoints are not feature vertices
+When that happens, it replaces the shared edge with the edge between the two feature vertices.
+
+Before:
+Triangle 0: (A, B, C)
+Triangle 1: (A, B, D)
+
+        C (oppositeVertex0)
+        /\
+       /  \
+      /    \
+     A------B
+      \    /
+       \  /
+        \/
+        D (oppositeVertex1)
+
+After:
+
+Triangle 0: (A, C, D)
+Triangle 1: (B, D, C)
+
+      C (oppositeVertex0)
+     /|\
+    / | \
+   /  |  \
+  A   |   B
+   \  |  /
+    \ | /
+     \|/
+      D (oppositeVertex1)
+
+ */
 function flipEdges(vertices, indices, featureVertices) {
   const makeEdgeKey = (vertexA, vertexB) => (vertexA < vertexB ? `${vertexA},${vertexB}` : `${vertexB},${vertexA}`);
+
+  // Build a map: edge key -> list of triangles that use that edge (each with triangleOffset, edge vertices, opposite vertex)
+  //an edge key is (smallerAbsoluteVertexIndex, largerAbsoluteVertexIndex)
   const edgeToTriangles = new Map();
   for (let triangleOffset = 0; triangleOffset < indices.length; triangleOffset += 3) {
     const vertexA = indices[triangleOffset], vertexB = indices[triangleOffset + 1], vertexC = indices[triangleOffset + 2];
@@ -118,17 +159,27 @@ function flipEdges(vertices, indices, featureVertices) {
 
   let flipCount = 0;
   const minimumArea = 1e-14;
+
   for (const [edgeKeyString, triangleList] of edgeToTriangles) {
-    if (triangleList.length !== 2) continue;
+    if (triangleList.length !== 2) continue;  // Only flip edges shared by exactly two triangles (manifold)
     const [triangle0, triangle1] = triangleList;
     const edgeVertexA = triangle0.edgeVertexU, edgeVertexB = triangle0.edgeVertexV;
     const oppositeVertex0 = triangle0.oppositeVertex, oppositeVertex1 = triangle1.oppositeVertex;
+
+    // Flip only when both opposite vertices are feature vertices (connect the two features)
     if (!featureVertices.has(oppositeVertex0) || !featureVertices.has(oppositeVertex1)) continue;
+    // Do not flip if either edge endpoint is a feature (would disconnect a feature from the fan)
     if (featureVertices.has(edgeVertexA) || featureVertices.has(edgeVertexB)) continue;
+
+    // Avoid creating a duplicate edge: if the flipped edge (opposite0–opposite1) already exists elsewhere, skip
     const flippedEdgeKey = makeEdgeKey(oppositeVertex0, oppositeVertex1);
     if (flippedEdgeKey !== edgeKeyString && edgeToTriangles.has(flippedEdgeKey)) continue;
+
+    // Skip if either new triangle would be degenerate (area below threshold)
     if (triArea(vertices, edgeVertexA, oppositeVertex0, oppositeVertex1) < minimumArea) continue;
     if (triArea(vertices, edgeVertexB, oppositeVertex1, oppositeVertex0) < minimumArea) continue;
+
+    // Perform the flip: replace edge A–B with edge opposite0–opposite1
     const triangleIndex0 = triangle0.triangleOffset, triangleIndex1 = triangle1.triangleOffset;
     indices[triangleIndex0] = edgeVertexA; indices[triangleIndex0 + 1] = oppositeVertex0; indices[triangleIndex0 + 2] = oppositeVertex1;
     indices[triangleIndex1] = edgeVertexB; indices[triangleIndex1 + 1] = oppositeVertex1; indices[triangleIndex1 + 2] = oppositeVertex0;
@@ -142,7 +193,7 @@ function flipEdges(vertices, indices, featureVertices) {
  * @param {number} resolution
  * @param {number} isovalue
  * @param {(x:number,y:number,z:number)=>number} fieldFn
- * @param {{ featureAngleDeg?: number }} options
+ * @param {{ featureAngleDeg?: number, flipEdges?: boolean }} options - flipEdges (default true) toggles post-process edge flip
  * @returns {{ vertices:number[], indices:number[] }}
  */
 export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {}) {
@@ -303,7 +354,8 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
     }
   }
 
-  flipEdges(vertices, indices, featureVertices);
+  const flipEdgesOption = options.flipEdges === true; // only flip when explicitly true
+  if (flipEdgesOption) flipEdges(vertices, indices, featureVertices);
   console.log('Transvoxel Extended: found', counts.n_edges, 'edge features,', counts.n_corners, 'corner features');
   return { vertices, indices };
 }
