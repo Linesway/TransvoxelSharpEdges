@@ -5,8 +5,8 @@
  * - places feature vertices via IsoEx-style SVD solve
  * - triangulates via fan around feature point or fallback poly triangulation
  */
-import { regularVertexData } from '../tables/transvoxel-tables.js';
-import { regularCellPolyTable, polyTable } from '../tables/transvoxel-extended-tables.js';
+import { regularVertexData, regularCellClass, regularCellData } from '../tables/transvoxel-tables.js';
+import { regularCellPolyTable } from '../tables/transvoxel-extended-tables.js';
 import { svdSolve3 } from '../math/svd-solve3.js';
 
 // C4 / Transvoxel corner convention.
@@ -17,6 +17,44 @@ const CORNER_DELTA = [
 
 function edgeKey(vertexIndexA, vertexIndexB) {
   return vertexIndexA < vertexIndexB ? `${vertexIndexA},${vertexIndexB}` : `${vertexIndexB},${vertexIndexA}`;
+}
+
+/** Partition C4 triangles by connectivity (share an edge). Returns array of components; each component is array of [a,b,c] triangles. */
+function partitionC4Triangles(cell) {
+  const nTri = cell.geometryCounts & 0x0f;
+  const vi = cell.vertexIndex;
+  const triangles = [];
+  for (let i = 0; i < nTri; i++) {
+    triangles.push([vi[i * 3], vi[i * 3 + 1], vi[i * 3 + 2]]);
+  }
+  function shareEdge(t0, t1) {
+    const e0 = new Set([edgeKey(t0[0], t0[1]), edgeKey(t0[1], t0[2]), edgeKey(t0[2], t0[0])]);
+    for (let k = 0; k < 3; k++) {
+      if (e0.has(edgeKey(t1[k], t1[(k + 1) % 3]))) return true;
+    }
+    return false;
+  }
+  const used = new Array(nTri).fill(false);
+  const components = [];
+  for (let i = 0; i < nTri; i++) {
+    if (used[i]) continue;
+    const comp = [];
+    const stack = [i];
+    used[i] = true;
+    while (stack.length > 0) {
+      const idx = stack.pop();
+      comp.push(triangles[idx]);
+      for (let j = 0; j < nTri; j++) {
+        if (used[j]) continue;
+        if (shareEdge(triangles[idx], triangles[j])) {
+          used[j] = true;
+          stack.push(j);
+        }
+      }
+    }
+    components.push(comp);
+  }
+  return components;
 }
 
 function sampleField(gridX, gridY, gridZ, resolution, fieldFn) {
@@ -291,8 +329,11 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
         const vertexArray = regularVertexData[caseIndex];
         const tableRow = regularCellPolyTable[caseIndex];
         const componentCount = tableRow[0];
+        const equivClass = regularCellClass[caseIndex];
+        const cellData = regularCellData[equivClass];
+        const c4Components = partitionC4Triangles(cellData);
 
-        // Build per-case sample vertex indices on demand.
+        // Build per-case sample vertex indices: max over polygon table and C4 triangle indices.
         const samples = new Array(12);
         let maximumVertexIndex = 0;
         let scanOffset = 1;
@@ -303,6 +344,11 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
             if (tableVertexIndex > maximumVertexIndex) maximumVertexIndex = tableVertexIndex;
           }
           scanOffset += vertexCountInComponent;
+        }
+        const nTri = cellData.geometryCounts & 0x0f;
+        const vi = cellData.vertexIndex;
+        for (let i = 0; i < nTri * 3; i++) {
+          if (vi[i] > maximumVertexIndex) maximumVertexIndex = vi[i];
         }
         for (let sampleSlot = 0; sampleSlot <= maximumVertexIndex; sampleSlot++) {
           const vertexCode = vertexArray[sampleSlot];
@@ -316,8 +362,6 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
           for (let vertexSlot = 0; vertexSlot < vertexCountInPolygon; vertexSlot++) polygonVertexIndices.push(samples[tableRow[tableOffset + vertexSlot]]);
           tableOffset += vertexCountInPolygon;
 
-          // regularCellPolyTable stores open n-gons (no repeated closing vertex).
-          //only a defense check, our tables are correct and never should generate a deformed polygon case
           if (vertexCountInPolygon < 3 || vertexCountInPolygon > 7) continue;
 
           const centerOfGravity = [0, 0, 0];
@@ -327,7 +371,6 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
           }
           centerOfGravity[0] /= vertexCountInPolygon; centerOfGravity[1] /= vertexCountInPolygon; centerOfGravity[2] /= vertexCountInPolygon;
 
-          // IsoEx: one position and one normal per polygon vertex (mesh_.point, mesh_.normal).
           const positionsCentered = [];
           const normals = [];
           for (let vertexSlot = 0; vertexSlot < vertexCountInPolygon; vertexSlot++) {
@@ -354,13 +397,13 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
               indices.push(polygonVertexIndices[vertexSlot], polygonVertexIndices[(vertexSlot + 1) % vertexCountInPolygon], featureVertexIndex);
             }
           } else {
-            const triangulationTemplate = polyTable[vertexCountInPolygon];
-            for (let triSlot = 0; triangulationTemplate[triSlot] !== -1; triSlot += 3) {
-              indices.push(
-                polygonVertexIndices[triangulationTemplate[triSlot]],
-                polygonVertexIndices[triangulationTemplate[triSlot + 1]],
-                polygonVertexIndices[triangulationTemplate[triSlot + 2]]
-              );
+            // Use C4 triangulation for this component (matches official Transvoxel tables; fan would be wrong for non-fan cells).
+            const tris = c4Components[componentIndex];
+            if (tris) {
+              for (let t = 0; t < tris.length; t++) {
+                const [a, b, c] = tris[t];
+                indices.push(samples[a], samples[b], samples[c]);
+              }
             }
           }
         }
