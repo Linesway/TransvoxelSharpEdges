@@ -127,7 +127,9 @@ const world1State = {
   perlinBase: 0.25,
   perlinAmplitude: 0.4,
   perlinFrequency: 3,
-  flipEdges: true
+  flipEdges: true,
+  featureAngleDeg: 30,
+  noFeatures: false
 };
 const world2State = {
   resolution: 20,
@@ -137,7 +139,10 @@ const world2State = {
   gridY: 2,
   gridZ: 2,
   perlin3DFrequency: 2,
-  flipEdges: true
+  flipEdges: true,
+  featureAngleDeg: 30,
+  noFeatures: false,
+  algorithm: 'transvoxelExtended' // mc | extended | transvoxel | transvoxelVS | transvoxelExtended
 };
 const chunkState = {
   mcEntity: null,
@@ -328,6 +333,23 @@ function setWorldVisibility() {
   perlinSection.appendChild(perlinFreqLabel);
   perlinSection.appendChild(perlinFreqInput);
 
+  const featureAngleLabelW1 = document.createElement('label');
+  featureAngleLabelW1.style.display = 'block';
+  featureAngleLabelW1.style.marginTop = '8px';
+  const featureAngleSpanW1 = document.createElement('span');
+  featureAngleSpanW1.textContent = world1State.featureAngleDeg + '°';
+  featureAngleLabelW1.appendChild(document.createTextNode('Feature angle '));
+  featureAngleLabelW1.appendChild(featureAngleSpanW1);
+  const featureAngleInputW1 = document.createElement('input');
+  featureAngleInputW1.type = 'range';
+  featureAngleInputW1.min = '0';
+  featureAngleInputW1.max = '90';
+  featureAngleInputW1.step = '5';
+  featureAngleInputW1.value = String(world1State.featureAngleDeg);
+  featureAngleInputW1.style.width = '140px';
+  featureAngleInputW1.style.display = 'block';
+  featureAngleInputW1.title = 'Sharp-feature detection angle (MC Extended / Transvoxel Extended)';
+
   const flipEdgesLabelW1 = document.createElement('label');
   flipEdgesLabelW1.style.display = 'block';
   flipEdgesLabelW1.style.marginTop = '10px';
@@ -339,6 +361,17 @@ function setWorldVisibility() {
   flipEdgesLabelW1.appendChild(flipEdgesCheckW1);
   flipEdgesLabelW1.appendChild(document.createTextNode('Triangle flip (Transvoxel/Extended MC)'));
 
+  const noFeaturesLabelW1 = document.createElement('label');
+  noFeaturesLabelW1.style.display = 'block';
+  noFeaturesLabelW1.style.marginTop = '8px';
+  noFeaturesLabelW1.style.cursor = 'pointer';
+  const noFeaturesCheckW1 = document.createElement('input');
+  noFeaturesCheckW1.type = 'checkbox';
+  noFeaturesCheckW1.checked = world1State.noFeatures;
+  noFeaturesCheckW1.style.marginRight = '6px';
+  noFeaturesLabelW1.appendChild(noFeaturesCheckW1);
+  noFeaturesLabelW1.appendChild(document.createTextNode('No features (override)'));
+
   world1Section.appendChild(resLabel);
   world1Section.appendChild(resInput);
   world1Section.appendChild(isoLabel);
@@ -348,7 +381,10 @@ function setWorldVisibility() {
   world1Section.appendChild(scaleLabel);
   world1Section.appendChild(scaleInput);
   world1Section.appendChild(perlinSection);
+  world1Section.appendChild(featureAngleLabelW1);
+  world1Section.appendChild(featureAngleInputW1);
   world1Section.appendChild(flipEdgesLabelW1);
+  world1Section.appendChild(noFeaturesLabelW1);
 
   function updatePerlinSectionVisibility() {
     const choice = parseInt(sdfSelect.value, 10);
@@ -408,6 +444,16 @@ function setWorldVisibility() {
   w2ScaleInput.value = String(world2State.chunkScale);
   w2ScaleInput.style.width = '140px';
   w2ScaleInput.style.display = 'block';
+
+  const w2AlgoLabel = document.createElement('label');
+  w2AlgoLabel.style.display = 'block';
+  w2AlgoLabel.style.marginTop = '8px';
+  w2AlgoLabel.appendChild(document.createTextNode('Algorithm '));
+  const w2AlgoSelect = document.createElement('select');
+  w2AlgoSelect.style.cssText = 'margin-left:4px;font-size:12px;background:#333;color:#eee;border:1px solid #666;border-radius:4px;padding:2px 6px;';
+  w2AlgoSelect.innerHTML = '<option value="mc">MC</option><option value="extended">MC Extended</option><option value="transvoxel">Transvoxel</option><option value="transvoxelVS">Transvoxel (VS)</option><option value="transvoxelExtended">Transvoxel Extended</option>';
+  w2AlgoSelect.value = world2State.algorithm;
+  w2AlgoLabel.appendChild(w2AlgoSelect);
 
   const gridLabel = document.createElement('div');
   gridLabel.style.marginTop = '8px';
@@ -469,6 +515,23 @@ function setWorldVisibility() {
   w2PerlinInput.style.width = '140px';
   w2PerlinInput.style.display = 'block';
 
+  const w2FeatureAngleLabel = document.createElement('label');
+  w2FeatureAngleLabel.style.display = 'block';
+  w2FeatureAngleLabel.style.marginTop = '8px';
+  const w2FeatureAngleSpan = document.createElement('span');
+  w2FeatureAngleSpan.textContent = world2State.featureAngleDeg + '°';
+  w2FeatureAngleLabel.appendChild(document.createTextNode('Feature angle '));
+  w2FeatureAngleLabel.appendChild(w2FeatureAngleSpan);
+  const w2FeatureAngleInput = document.createElement('input');
+  w2FeatureAngleInput.type = 'range';
+  w2FeatureAngleInput.min = '0';
+  w2FeatureAngleInput.max = '90';
+  w2FeatureAngleInput.step = '5';
+  w2FeatureAngleInput.value = String(world2State.featureAngleDeg);
+  w2FeatureAngleInput.style.width = '140px';
+  w2FeatureAngleInput.style.display = 'block';
+  w2FeatureAngleInput.title = 'Sharp-feature detection angle (MC Extended / Transvoxel Extended)';
+
   const flipEdgesLabelW2 = document.createElement('label');
   flipEdgesLabelW2.style.display = 'block';
   flipEdgesLabelW2.style.marginTop = '10px';
@@ -480,12 +543,25 @@ function setWorldVisibility() {
   flipEdgesLabelW2.appendChild(flipEdgesCheckW2);
   flipEdgesLabelW2.appendChild(document.createTextNode('Triangle flip'));
 
+  const noFeaturesLabelW2 = document.createElement('label');
+  noFeaturesLabelW2.style.display = 'block';
+  noFeaturesLabelW2.style.marginTop = '8px';
+  noFeaturesLabelW2.style.cursor = 'pointer';
+  const noFeaturesCheckW2 = document.createElement('input');
+  noFeaturesCheckW2.type = 'checkbox';
+  noFeaturesCheckW2.checked = world2State.noFeatures;
+  noFeaturesCheckW2.style.marginRight = '6px';
+  noFeaturesLabelW2.appendChild(noFeaturesCheckW2);
+  noFeaturesLabelW2.appendChild(document.createTextNode('No features (override)'));
+
   world2Section.appendChild(w2ResLabel);
   world2Section.appendChild(w2ResInput);
   world2Section.appendChild(w2IsoLabel);
   world2Section.appendChild(w2IsoInput);
   world2Section.appendChild(w2ScaleLabel);
   world2Section.appendChild(w2ScaleInput);
+  world2Section.appendChild(w2AlgoLabel);
+  world2Section.appendChild(w2AlgoSelect);
   world2Section.appendChild(gridLabel);
   world2Section.appendChild(w2GridXLabel);
   world2Section.appendChild(w2GridXInput);
@@ -495,12 +571,16 @@ function setWorldVisibility() {
   world2Section.appendChild(w2GridZInput);
   world2Section.appendChild(w2PerlinLabel);
   world2Section.appendChild(w2PerlinInput);
+  world2Section.appendChild(w2FeatureAngleLabel);
+  world2Section.appendChild(w2FeatureAngleInput);
   world2Section.appendChild(flipEdgesLabelW2);
+  world2Section.appendChild(noFeaturesLabelW2);
 
   const applyBtn = document.createElement('button');
   applyBtn.textContent = 'Apply';
   applyBtn.style.cssText = 'margin-top:10px;padding:6px 12px;cursor:pointer;background:#444;color:#eee;border:1px solid #666;border-radius:4px;font-size:12px;';
 
+  featureAngleInputW1.addEventListener('input', () => { featureAngleSpanW1.textContent = featureAngleInputW1.value + '°'; });
   resInput.addEventListener('input', () => { resValueSpan.textContent = resInput.value; });
   isoInput.addEventListener('input', () => { isoValueSpan.textContent = Number(isoInput.value).toFixed(2); });
   scaleInput.addEventListener('input', () => { scaleValueSpan.textContent = Number(scaleInput.value).toFixed(1); });
@@ -514,6 +594,7 @@ function setWorldVisibility() {
   w2GridYInput.addEventListener('input', () => { w2GridYSpan.textContent = w2GridYInput.value; });
   w2GridZInput.addEventListener('input', () => { w2GridZSpan.textContent = w2GridZInput.value; });
   w2PerlinInput.addEventListener('input', () => { w2PerlinSpan.textContent = Number(w2PerlinInput.value).toFixed(1); });
+  w2FeatureAngleInput.addEventListener('input', () => { w2FeatureAngleSpan.textContent = w2FeatureAngleInput.value + '°'; });
 
   function showSectionForWorld() {
     const w = parseInt(worldSelect.value, 10);
@@ -540,6 +621,8 @@ function setWorldVisibility() {
       world1State.perlinAmplitude = Math.max(0.1, Math.min(0.8, Number(perlinAmpInput.value) || 0.4));
       world1State.perlinFrequency = Math.max(0.5, Math.min(10, Number(perlinFreqInput.value) || 3));
       world1State.flipEdges = flipEdgesCheckW1.checked;
+      world1State.noFeatures = noFeaturesCheckW1.checked;
+      world1State.featureAngleDeg = (() => { const v = parseInt(featureAngleInputW1.value, 10); return Math.max(0, Math.min(90, isNaN(v) ? 30 : v)); })();
       resInput.value = String(world1State.resolution);
       isoInput.value = String(world1State.iso);
       sdfSelect.value = String(world1State.sdfChoice);
@@ -553,6 +636,9 @@ function setWorldVisibility() {
       perlinBaseSpan.textContent = world1State.perlinBase.toFixed(2);
       perlinAmpSpan.textContent = world1State.perlinAmplitude.toFixed(2);
       perlinFreqSpan.textContent = world1State.perlinFrequency.toFixed(1);
+      featureAngleInputW1.value = String(world1State.featureAngleDeg);
+      featureAngleSpanW1.textContent = world1State.featureAngleDeg + '°';
+      noFeaturesCheckW1.checked = world1State.noFeatures;
 
       const mcRes = world1State.resolution;
       const scale = world1State.chunkScale;
@@ -574,12 +660,12 @@ function setWorldVisibility() {
       if (tvSharedMesh && chunkState.tvSharedEntity && chunkState.materials.tvShared) {
         chunkState.tvSharedEntity.render.meshInstances = [new pc.MeshInstance(tvSharedMesh, chunkState.materials.tvShared)];
       }
-      const transvoxelExtResult = runTransvoxelExtended(mcRes, iso, fieldFn, { flipEdges: world1State.flipEdges });
+      const transvoxelExtResult = runTransvoxelExtended(mcRes, iso, fieldFn, { flipEdges: world1State.flipEdges, featureAngleDeg: world1State.featureAngleDeg, noFeatures: world1State.noFeatures });
       const tvxMesh = createMeshFromMCResult(app.graphicsDevice, transvoxelExtResult, { center: true });
       if (tvxMesh && chunkState.tvxEntity && chunkState.materials.tvx) {
         chunkState.tvxEntity.render.meshInstances = [new pc.MeshInstance(tvxMesh, chunkState.materials.tvx)];
       }
-      const extendedResult = runExtendedMarchingCubes(mcRes, iso, fieldFn, world1State.flipEdges);
+      const extendedResult = runExtendedMarchingCubes(mcRes, iso, fieldFn, world1State.flipEdges, { featureAngleDeg: world1State.featureAngleDeg, noFeatures: world1State.noFeatures });
       const extendedMesh = createMeshFromMCResult(app.graphicsDevice, extendedResult, { center: true });
       if (extendedMesh && chunkState.extendedEntity && chunkState.materials.extended) {
         chunkState.extendedEntity.render.meshInstances = [new pc.MeshInstance(extendedMesh, chunkState.materials.extended)];
@@ -600,6 +686,9 @@ function setWorldVisibility() {
       world2State.gridZ = Math.max(1, Math.min(6, parseInt(w2GridZInput.value, 10) || 2));
       world2State.perlin3DFrequency = Math.max(0.5, Math.min(5, Number(w2PerlinInput.value) || 2));
       world2State.flipEdges = flipEdgesCheckW2.checked;
+      world2State.noFeatures = noFeaturesCheckW2.checked;
+      world2State.featureAngleDeg = (() => { const v = parseInt(w2FeatureAngleInput.value, 10); return Math.max(0, Math.min(90, isNaN(v) ? 30 : v)); })();
+      world2State.algorithm = w2AlgoSelect.value || 'transvoxelExtended';
       w2ResInput.value = String(world2State.resolution);
       w2IsoInput.value = String(world2State.iso);
       w2ScaleInput.value = String(world2State.chunkScale);
@@ -607,6 +696,9 @@ function setWorldVisibility() {
       w2GridYInput.value = String(world2State.gridY);
       w2GridZInput.value = String(world2State.gridZ);
       w2PerlinInput.value = String(world2State.perlin3DFrequency);
+      w2FeatureAngleInput.value = String(world2State.featureAngleDeg);
+      w2FeatureAngleSpan.textContent = world2State.featureAngleDeg + '°';
+      noFeaturesCheckW2.checked = world2State.noFeatures;
       w2ResSpan.textContent = world2State.resolution;
       w2IsoSpan.textContent = world2State.iso.toFixed(2);
       w2ScaleSpan.textContent = world2State.chunkScale.toFixed(1);
@@ -614,6 +706,7 @@ function setWorldVisibility() {
       w2GridYSpan.textContent = world2State.gridY;
       w2GridZSpan.textContent = world2State.gridZ;
       w2PerlinSpan.textContent = world2State.perlin3DFrequency.toFixed(1);
+      w2AlgoSelect.value = world2State.algorithm;
 
       const mcRes = world2State.resolution;
       const scale = world2State.chunkScale;
@@ -633,19 +726,31 @@ function setWorldVisibility() {
       const halfX = (gx - 1) * 0.5;
       const halfY = (gy - 1) * 0.5;
       const halfZ = (gz - 1) * 0.5;
+      const algo = world2State.algorithm;
+      const flip = world2State.flipEdges;
+      const runAlgo = (fieldFn) => {
+        if (algo === 'mc') return runMarchingCubes(mcRes, iso, fieldFn);
+        if (algo === 'extended') return runExtendedMarchingCubes(mcRes, iso, fieldFn, flip, { featureAngleDeg: world2State.featureAngleDeg, noFeatures: world2State.noFeatures });
+        if (algo === 'transvoxel') return runTransvoxelInterior(mcRes, iso, fieldFn);
+        if (algo === 'transvoxelVS') return runTransvoxelInteriorVertexSharing(mcRes, iso, fieldFn);
+        return runTransvoxelExtended(mcRes, iso, fieldFn, { flipEdges: flip, featureAngleDeg: world2State.featureAngleDeg, noFeatures: world2State.noFeatures });
+      };
+      const algoMaterialKey = { mc: 'mc', extended: 'extended', transvoxel: 'tv', transvoxelVS: 'tvShared', transvoxelExtended: 'tvx' }[algo] || 'tvx';
+      const terrainMat = chunkState.materials[algoMaterialKey];
+
       for (let cz = 0; cz < gz; cz++) {
         for (let cy = 0; cy < gy; cy++) {
           for (let cx = 0; cx < gx; cx++) {
             const fieldFn = createPerlin3DField(opts, cx, cy, cz);
-            const result = runTransvoxelExtended(mcRes, iso, fieldFn, { flipEdges: world2State.flipEdges });
+            const result = runAlgo(fieldFn);
             const mesh = createMeshFromMCResult(app.graphicsDevice, result, { center: true });
             if (!mesh) continue;
-            const entity = new pc.Entity('TVx Chunk ' + cx + ',' + cy + ',' + cz);
+            const entity = new pc.Entity('Chunk ' + cx + ',' + cy + ',' + cz);
             entity.setPosition((cx - halfX) * scale, (cy - halfY) * scale, (cz - halfZ) * scale);
             entity.setLocalScale(scale, scale, scale);
             entity.addComponent('render');
             entity.render.type = 'asset';
-            entity.render.meshInstances = [new pc.MeshInstance(mesh, chunkState.materials.tvx)];
+            entity.render.meshInstances = [new pc.MeshInstance(mesh, terrainMat)];
             terrainRoot.addChild(entity);
             chunkState.tvxChunkEntities.push(entity);
           }

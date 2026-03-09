@@ -5,7 +5,7 @@
  * - find_feature: p,n; cog; min_c; rank 2/3; SVD → point; feature vertex gets normal = normalized sum of polygon normals.
  * - flip_edges: only when doFlipEdges === true; flip if v1,v3 feature and v0,v2 not (exactly as C++).
  */
-import { edgeTable, polygonTable, polyTable } from '../tables/mc-extended-tables.js';
+import { edgeTable, triTableExtended, polyTable } from '../tables/mc-extended-tables-isoex.js';
 import { svdSolve3 } from '../math/svd-solve3.js';
 
 // Corner order: surfRecon mcTable 0..7
@@ -45,11 +45,12 @@ function interpolate(p0, p1, v0, v1, iso) {
  * @param {number} iso - isosurface (inside where field > iso)
  * @param {(x,y,z)=>number} fieldFn - scalar field
  * @param {boolean} doFlipEdges - if true run flip_edges (C++ always does; we allow toggle)
- * @param {{ featureAngleDeg?: number }} opts - feature angle degrees (default 30)
+ * @param {{ featureAngleDeg?: number, noFeatures?: boolean }} opts - feature angle degrees (default 30); noFeatures=true disables sharp features
  */
 export function runExtendedMarchingCubes(res, iso, fieldFn, doFlipEdges = true, opts = {}) {
   const featureAngleDeg = opts.featureAngleDeg ?? 30;
   const featureAngleRad = (featureAngleDeg * Math.PI) / 180;
+  const noFeatures = opts.noFeatures === true;
 
   const vertices = [];
   const indices = [];
@@ -99,6 +100,7 @@ export function runExtendedMarchingCubes(res, iso, fieldFn, doFlipEdges = true, 
 
   // find_feature(vhandles) — IsoEx: p,n; cog; min_c; rank; SVD; add_vertex(point); set_feature; no normal in C++, we set average
   function findFeature(vhandles) {
+    if (noFeatures) return null;
     const nV = vhandles.length;
     const p = [];
     const n = [];
@@ -152,6 +154,18 @@ export function runExtendedMarchingCubes(res, iso, fieldFn, doFlipEdges = true, 
       b.push(p[i][0] * n[i][0] + p[i][1] * n[i][1] + p[i][2] * n[i][2]);
     }
     const x = svdSolve3(A, b, rank === 2);
+    if (!Number.isFinite(x[0]) || !Number.isFinite(x[1]) || !Number.isFinite(x[2])) return null;
+    let minP = [p[0][0], p[0][1], p[0][2]], maxP = [p[0][0], p[0][1], p[0][2]];
+    for (let i = 1; i < nV; i++) {
+      for (let d = 0; d < 3; d++) {
+        if (p[i][d] < minP[d]) minP[d] = p[i][d];
+        if (p[i][d] > maxP[d]) maxP[d] = p[i][d];
+      }
+    }
+    const margin = 0.1;
+    for (let d = 0; d < 3; d++) {
+      if (x[d] < minP[d] - margin || x[d] > maxP[d] + margin) return null;
+    }
     const point = [x[0] + cog[0], x[1] + cog[1], x[2] + cog[2]];
 
     // Feature vertex normal: IsoEx doesn't set it; we use normalized sum of polygon normals for shading
@@ -197,20 +211,20 @@ export function runExtendedMarchingCubes(res, iso, fieldFn, doFlipEdges = true, 
         if (edgeTable[cubetype] & 1024) samples[10] = addVertex(cx, cy, cz, 2, 6);
         if (edgeTable[cubetype] & 2048) samples[11] = addVertex(cx, cy, cz, 3, 7);
 
-        const row = polygonTable[cubetype];
+        // IsoEx/surfRecon layout: row[0]=n_components, row[1..n_components]=n_vertices per sheet, then indices block
+        const row = triTableExtended[cubetype];
         const n_components = row[0];
-        let tableOffset = 1;
-        for (let i = 1; i <= n_components; i++) {
-          const n_vertices = row[tableOffset++];
+        let indicesOffset = 1 + n_components;
+        for (let i = 0; i < n_components; i++) {
+          const n_vertices = row[1 + i];
           const vhandles = [];
           for (let j = 0; j < n_vertices; j++)
-            vhandles.push(samples[row[tableOffset + j]]);
-          tableOffset += n_vertices;
+            vhandles.push(samples[row[indicesOffset + j]]);
+          indicesOffset += n_vertices;
 
           const vh = findFeature(vhandles);
           if (vh !== null) {
-            // IsoEx: vhandles.push_back(vhandles[0]); for (j=0;j<n_vertices;++j) add_face(vhandles[j], vhandles[j+1], vh);
-            const v0 = vhandles[0];
+            // IsoEx: for (j=0;j<n_vertices;++j) add_face(vhandles[j], vhandles[j+1], vh);
             for (let j = 0; j < n_vertices; j++)
               indices.push(vhandles[j], vhandles[(j + 1) % n_vertices], vh);
           } else {

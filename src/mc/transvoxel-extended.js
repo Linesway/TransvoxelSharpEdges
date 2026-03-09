@@ -85,6 +85,19 @@ function findFeaturePoint(positionsCentered, normals, featureAngleRad, counts) {
   }
 
   const point = svdSolve3(matrixA, vectorB, rank === 2);
+  if (!Number.isFinite(point[0]) || !Number.isFinite(point[1]) || !Number.isFinite(point[2])) return null;
+  let minP = [positionsCentered[0][0], positionsCentered[0][1], positionsCentered[0][2]];
+  let maxP = [positionsCentered[0][0], positionsCentered[0][1], positionsCentered[0][2]];
+  for (let i = 1; i < vertexCount; i++) {
+    for (let d = 0; d < 3; d++) {
+      if (positionsCentered[i][d] < minP[d]) minP[d] = positionsCentered[i][d];
+      if (positionsCentered[i][d] > maxP[d]) maxP[d] = positionsCentered[i][d];
+    }
+  }
+  const margin = 0.1;
+  for (let d = 0; d < 3; d++) {
+    if (point[d] < minP[d] - margin || point[d] > maxP[d] + margin) return null;
+  }
   return { point, rank };
 }
 
@@ -193,12 +206,13 @@ function flipEdges(vertices, indices, featureVertices) {
  * @param {number} resolution
  * @param {number} isovalue
  * @param {(x:number,y:number,z:number)=>number} fieldFn
- * @param {{ featureAngleDeg?: number, flipEdges?: boolean }} options - flipEdges (default true) toggles post-process edge flip
+ * @param {{ featureAngleDeg?: number, flipEdges?: boolean, noFeatures?: boolean }} options - flipEdges (default true) toggles post-process edge flip; noFeatures=true disables sharp features
  * @returns {{ vertices:number[], indices:number[] }}
  */
 export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {}) {
   const featureAngleDeg = options.featureAngleDeg ?? 30;
   const featureAngleRad = (featureAngleDeg * Math.PI) / 180;
+  const noFeatures = options.noFeatures === true;
 
   const vertices = [];
   const indices = [];
@@ -322,7 +336,7 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
             normals.push(getNormal(polygonVertexIndices[vertexSlot]));
           }
 
-          const featureResult = findFeaturePoint(positionsCentered, normals, featureAngleRad, counts);
+          const featureResult = noFeatures ? null : findFeaturePoint(positionsCentered, normals, featureAngleRad, counts);
           if (featureResult) {
             const worldPosition = [
               featureResult.point[0] + centerOfGravity[0],
