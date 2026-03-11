@@ -103,6 +103,9 @@ function findFeaturePoint(positionsCentered, normals, featureAngleRad, cornerAng
   for (let d = 0; d < 3; d++) {
     if (point[d] < minP[d] - margin || point[d] > maxP[d] + margin) return null;
   }
+  // Reject degenerate polygon (zero extent) so we don't place a feature at a single point
+  const extent = Math.max(maxP[0] - minP[0], maxP[1] - minP[1], maxP[2] - minP[2]);
+  if (extent < 1e-10) return null;
   return { point, rank };
 }
 
@@ -298,9 +301,16 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
         const componentCount = tableRow[0];
 
         // 12 vertex slots per cell (like MC extended 12 edges); table indices reference these.
+        // Do not create vertices for 0x0000 (padding): that would create degenerate corner vertices
+        // and can cause triangles to connect across the grid when indices are reused incorrectly.
         const samples = new Array(12);
+        const INVALID_SLOT = -1;
         for (let sampleSlot = 0; sampleSlot < 12; sampleSlot++) {
           const vertexCode = vertexArray[sampleSlot];
+          if (vertexCode === 0) {
+            samples[sampleSlot] = INVALID_SLOT;
+            continue;
+          }
           samples[sampleSlot] = getVertex(cellX, cellY, cellZ, vertexCode, cornerValues);
         }
 
@@ -308,10 +318,17 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
         for (let componentIndex = 0; componentIndex < componentCount; componentIndex++) {
           const vertexCountInPolygon = tableRow[tableOffset++];
           const polygonVertexIndices = [];
+          let skipComponent = false;
           for (let vertexSlot = 0; vertexSlot < vertexCountInPolygon; vertexSlot++) {
-            polygonVertexIndices.push(samples[tableRow[tableOffset + vertexSlot]]);
+            const idx = samples[tableRow[tableOffset + vertexSlot]];
+            if (idx === INVALID_SLOT) {
+              skipComponent = true;
+              break;
+            }
+            polygonVertexIndices.push(idx);
           }
           tableOffset += vertexCountInPolygon;
+          if (skipComponent) continue;
 
           const centerOfGravity = [0, 0, 0];
           for (let vertexSlot = 0; vertexSlot < vertexCountInPolygon; vertexSlot++) {
@@ -329,12 +346,19 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
           }
 
           const featureResult = noFeatures ? null : findFeaturePoint(positionsCentered, normals, featureAngleRad, cornerAngleRad, counts);
+          let worldPosition = null;
+          let useFeatureVertex = false;
           if (featureResult) {
-            const worldPosition = [
+            worldPosition = [
               featureResult.point[0] + centerOfGravity[0],
               featureResult.point[1] + centerOfGravity[1],
               featureResult.point[2] + centerOfGravity[2]
             ];
+            // Avoid placing a feature vertex at origin (triangles "shooting to origin" at e.g. res 34, 6x6 cubes)
+            const atOrigin = Math.abs(worldPosition[0]) < 1e-10 && Math.abs(worldPosition[1]) < 1e-10 && Math.abs(worldPosition[2]) < 1e-10;
+            useFeatureVertex = !atOrigin;
+          }
+          if (useFeatureVertex && worldPosition) {
             let averageNormalX = 0, averageNormalY = 0, averageNormalZ = 0;
             for (let vertexSlot = 0; vertexSlot < normals.length; vertexSlot++) {
               averageNormalX += normals[vertexSlot][0]; averageNormalY += normals[vertexSlot][1]; averageNormalZ += normals[vertexSlot][2];
@@ -346,7 +370,7 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
               indices.push(polygonVertexIndices[vertexSlot], polygonVertexIndices[(vertexSlot + 1) % vertexCountInPolygon], featureVertexIndex);
             }
           } else {
-            // Same as MC extended: fan triangulation from polyTable (same polygon used for feature path).
+            // No feature or rejected (e.g. at origin): fan triangulation from polyTable
             const triangulationTemplate = polyTable[vertexCountInPolygon];
             for (let triSlot = 0; triangulationTemplate[triSlot] !== -1; triSlot += 3) {
               indices.push(

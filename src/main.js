@@ -7,6 +7,7 @@ import * as sdf from './noise/sdf.js';
 const { insidePositive, cubeSDF, sphereSDF, createPerlin2DSDF, createPerlin2DUnionCubeSDF, createPerlin3DField, createGridOfCubesSDF } = sdf;
 import { runMarchingCubes } from './mc/marching-cubes.js';
 import { runExtendedMarchingCubes } from './mc/marching-cubes-extended.js';
+import { runExtendedMarchingCubesHalfedge } from './mc/marching-cubes-extended-halfedge.js';
 import { runTransvoxelInterior } from './mc/transvoxel.js';
 import { runTransvoxelInteriorVertexSharing } from './mc/transvoxel-vertex-sharing.js';
 import { runTransvoxelExtended } from './mc/transvoxel-extended.js';
@@ -117,7 +118,7 @@ app.root.addChild(fillLight);
   document.body.appendChild(panel);
 })();
 
-// World 1: Compare (5 algorithms, single chunk). World 2: TVx only, grid of chunks, 3D Perlin.
+// World 1: Compare (6 algorithms, single chunk). World 2: TVx only, grid of chunks, 3D Perlin.
 const currentWorld = { value: 1 }; // 1 = Compare, 2 = TVx Terrain, 3 = Grid of cubes
 const world1State = {
   resolution: 24,
@@ -162,6 +163,7 @@ const chunkState = {
   tvSharedEntity: null,
   tvxEntity: null,
   extendedEntity: null,
+  extendedHalfedgeEntity: null,
   tvxChunkEntities: [], // World 2: one entity per chunk
   cubesRoot: null,       // World 3: root for grid-of-cubes mesh
   cubesMeshEntity: null,
@@ -185,12 +187,15 @@ function getFieldFn() {
   return insidePositive(cubeSDF);
 }
 
-/** Even x positions for the 5 mesh entities (MC, Extended, TV, TV Shared, TVx). Perlin (3 or 4) uses wider spacing. */
+/** Even x positions for the 6 mesh entities (MC, Extended, Extended Half-edge, TV, TV Shared, TVx). Perlin (3 or 4) uses wider spacing. */
 function getMeshPositions() {
   const isPerlin = world1State.sdfChoice === 3 || world1State.sdfChoice === 4;
   const spacing = isPerlin ? 5 : 3;
-  const half = 2 * spacing;
-  return [half, spacing, 0, -spacing, -half]; // MC, Extended, TV, TV Shared, TVx
+  const n = 6;
+  const half = ((n - 1) / 2) * spacing;
+  const pos = [];
+  for (let i = 0; i < n; i++) pos.push(half - i * spacing);
+  return pos; // [0]=MC, [1]=Extended, [2]=Extended Half-edge, [3]=TV, [4]=TV Shared, [5]=TVx
 }
 
 function setWorldVisibility() {
@@ -215,7 +220,7 @@ function setWorldVisibility() {
   const worldSelect = document.createElement('select');
   worldSelect.style.cssText = 'font-size:12px;background:#333;color:#eee;border:1px solid #666;border-radius:4px;padding:4px 8px;margin-left:6px;cursor:pointer;min-width:200px;';
   worldSelect.title = 'Switch between Compare, TVx Terrain, and Grid of cubes';
-  const opt1 = document.createElement('option'); opt1.value = '1'; opt1.textContent = '1: Compare (5 algorithms)'; worldSelect.appendChild(opt1);
+  const opt1 = document.createElement('option'); opt1.value = '1'; opt1.textContent = '1: Compare (6 algorithms)'; worldSelect.appendChild(opt1);
   const opt2 = document.createElement('option'); opt2.value = '2'; opt2.textContent = '2: TVx Terrain (chunk grid)'; worldSelect.appendChild(opt2);
   const opt3 = document.createElement('option'); opt3.value = '3'; opt3.textContent = '3: Grid of cubes'; worldSelect.appendChild(opt3);
   worldRow.appendChild(worldSelect);
@@ -474,7 +479,7 @@ function setWorldVisibility() {
   w2AlgoLabel.appendChild(document.createTextNode('Algorithm '));
   const w2AlgoSelect = document.createElement('select');
   w2AlgoSelect.style.cssText = 'margin-left:4px;font-size:12px;background:#333;color:#eee;border:1px solid #666;border-radius:4px;padding:2px 6px;';
-  w2AlgoSelect.innerHTML = '<option value="mc">MC</option><option value="extended">MC Extended</option><option value="transvoxel">Transvoxel</option><option value="transvoxelVS">Transvoxel (VS)</option><option value="transvoxelExtended">Transvoxel Extended</option>';
+  w2AlgoSelect.innerHTML = '<option value="mc">MC</option><option value="extended">MC Extended</option><option value="extendedHalfedge">MC Extended (half-edge)</option><option value="transvoxel">Transvoxel</option><option value="transvoxelVS">Transvoxel (VS)</option><option value="transvoxelExtended">Transvoxel Extended</option>';
   w2AlgoSelect.value = world2State.algorithm;
   w2AlgoLabel.appendChild(w2AlgoSelect);
 
@@ -721,7 +726,7 @@ function setWorldVisibility() {
   w3AlgoLabel.appendChild(document.createTextNode('Algorithm '));
   const w3AlgoSelect = document.createElement('select');
   w3AlgoSelect.style.cssText = 'margin-left:4px;font-size:12px;background:#333;color:#eee;border:1px solid #666;border-radius:4px;padding:2px 6px;';
-  w3AlgoSelect.innerHTML = '<option value="mc">MC</option><option value="extended">MC Extended</option><option value="transvoxel">Transvoxel</option><option value="transvoxelVS">Transvoxel (VS)</option><option value="transvoxelExtended">Transvoxel Extended</option>';
+  w3AlgoSelect.innerHTML = '<option value="mc">MC</option><option value="extended">MC Extended</option><option value="extendedHalfedge">MC Extended (half-edge)</option><option value="transvoxel">Transvoxel</option><option value="transvoxelVS">Transvoxel (VS)</option><option value="transvoxelExtended">Transvoxel Extended</option>';
   w3AlgoSelect.value = world3State.algorithm;
   w3AlgoLabel.appendChild(w3AlgoSelect);
 
@@ -867,12 +872,18 @@ function setWorldVisibility() {
       if (extendedMesh && chunkState.extendedEntity && chunkState.materials.extended) {
         chunkState.extendedEntity.render.meshInstances = [new pc.MeshInstance(extendedMesh, chunkState.materials.extended)];
       }
+      const extendedHalfedgeResult = runExtendedMarchingCubesHalfedge(mcRes, iso, fieldFn, world1State.flipEdges, { featureAngleDeg: world1State.featureAngleDeg, noFeatures: world1State.noFeatures });
+      const extendedHalfedgeMesh = createMeshFromMCResult(app.graphicsDevice, extendedHalfedgeResult, { center: true });
+      if (extendedHalfedgeMesh && chunkState.extendedHalfedgeEntity && chunkState.materials.extended) {
+        chunkState.extendedHalfedgeEntity.render.meshInstances = [new pc.MeshInstance(extendedHalfedgeMesh, chunkState.materials.extended)];
+      }
       const pos = getMeshPositions();
       if (chunkState.mcEntity) { chunkState.mcEntity.setPosition(pos[0], 0, 0); chunkState.mcEntity.setLocalScale(scale, scale, scale); }
       if (chunkState.extendedEntity) { chunkState.extendedEntity.setPosition(pos[1], 0, 0); chunkState.extendedEntity.setLocalScale(scale, scale, scale); }
-      if (chunkState.tvEntity) { chunkState.tvEntity.setPosition(pos[2], 0, 0); chunkState.tvEntity.setLocalScale(scale, scale, scale); }
-      if (chunkState.tvSharedEntity) { chunkState.tvSharedEntity.setPosition(pos[3], 0, 0); chunkState.tvSharedEntity.setLocalScale(scale, scale, scale); }
-      if (chunkState.tvxEntity) { chunkState.tvxEntity.setPosition(pos[4], 0, 0); chunkState.tvxEntity.setLocalScale(scale, scale, scale); }
+      if (chunkState.extendedHalfedgeEntity) { chunkState.extendedHalfedgeEntity.setPosition(pos[2], 0, 0); chunkState.extendedHalfedgeEntity.setLocalScale(scale, scale, scale); }
+      if (chunkState.tvEntity) { chunkState.tvEntity.setPosition(pos[3], 0, 0); chunkState.tvEntity.setLocalScale(scale, scale, scale); }
+      if (chunkState.tvSharedEntity) { chunkState.tvSharedEntity.setPosition(pos[4], 0, 0); chunkState.tvSharedEntity.setLocalScale(scale, scale, scale); }
+      if (chunkState.tvxEntity) { chunkState.tvxEntity.setPosition(pos[5], 0, 0); chunkState.tvxEntity.setLocalScale(scale, scale, scale); }
       console.log('World 1 rebuilt: resolution=', mcRes, 'iso=', iso, 'sdf=', world1State.sdfChoice, 'scale=', scale);
     } else if (w === 2) {
       world2State.resolution = Math.max(6, Math.min(40, parseInt(w2ResInput.value, 10) || 20));
@@ -928,11 +939,12 @@ function setWorldVisibility() {
       const runAlgo = (fieldFn) => {
         if (algo === 'mc') return runMarchingCubes(mcRes, iso, fieldFn);
         if (algo === 'extended') return runExtendedMarchingCubes(mcRes, iso, fieldFn, flip, { featureAngleDeg: world2State.featureAngleDeg, noFeatures: world2State.noFeatures });
+        if (algo === 'extendedHalfedge') return runExtendedMarchingCubesHalfedge(mcRes, iso, fieldFn, flip, { featureAngleDeg: world2State.featureAngleDeg, noFeatures: world2State.noFeatures });
         if (algo === 'transvoxel') return runTransvoxelInterior(mcRes, iso, fieldFn);
         if (algo === 'transvoxelVS') return runTransvoxelInteriorVertexSharing(mcRes, iso, fieldFn);
         return runTransvoxelExtended(mcRes, iso, fieldFn, { flipEdges: flip, featureAngleDeg: world2State.featureAngleDeg, noFeatures: world2State.noFeatures });
       };
-      const algoMaterialKey = { mc: 'mc', extended: 'extended', transvoxel: 'tv', transvoxelVS: 'tvShared', transvoxelExtended: 'tvx' }[algo] || 'tvx';
+      const algoMaterialKey = { mc: 'mc', extended: 'extended', extendedHalfedge: 'extended', transvoxel: 'tv', transvoxelVS: 'tvShared', transvoxelExtended: 'tvx' }[algo] || 'tvx';
       const terrainMat = chunkState.materials[algoMaterialKey];
 
       for (let cz = 0; cz < gz; cz++) {
@@ -1001,11 +1013,12 @@ function setWorldVisibility() {
       const runAlgo = (fn) => {
         if (algo === 'mc') return runMarchingCubes(mcRes, iso, fn);
         if (algo === 'extended') return runExtendedMarchingCubes(mcRes, iso, fn, flip, { featureAngleDeg: world3State.featureAngleDeg, noFeatures: world3State.noFeatures });
+        if (algo === 'extendedHalfedge') return runExtendedMarchingCubesHalfedge(mcRes, iso, fn, flip, { featureAngleDeg: world3State.featureAngleDeg, noFeatures: world3State.noFeatures });
         if (algo === 'transvoxel') return runTransvoxelInterior(mcRes, iso, fn);
         if (algo === 'transvoxelVS') return runTransvoxelInteriorVertexSharing(mcRes, iso, fn);
         return runTransvoxelExtended(mcRes, iso, fn, { flipEdges: flip, featureAngleDeg: world3State.featureAngleDeg, noFeatures: world3State.noFeatures });
       };
-      const algoMaterialKey = { mc: 'mc', extended: 'extended', transvoxel: 'tv', transvoxelVS: 'tvShared', transvoxelExtended: 'tvx' }[algo] || 'tvx';
+      const algoMaterialKey = { mc: 'mc', extended: 'extended', extendedHalfedge: 'extended', transvoxel: 'tv', transvoxelVS: 'tvShared', transvoxelExtended: 'tvx' }[algo] || 'tvx';
       const mat = chunkState.materials[algoMaterialKey];
       const result = runAlgo(fieldFn);
       const mesh = createMeshFromMCResult(app.graphicsDevice, result, { center: true });
@@ -1135,7 +1148,7 @@ console.log('Transvoxel result:', transvoxelResult.vertices.length / 6, 'vertice
 const transvoxelMesh = createMeshFromMCResult(app.graphicsDevice, transvoxelResult, { center: true });
 if (transvoxelMesh) {
   const tvEntity = new pc.Entity('Transvoxel Cube');
-  tvEntity.setPosition(meshPos[2], 0, 0);
+  tvEntity.setPosition(meshPos[3], 0, 0);
   tvEntity.setLocalScale(initialScale, initialScale, initialScale);
   tvEntity.addComponent('render');
   tvEntity.render.type = 'asset';
@@ -1150,7 +1163,7 @@ console.log('Transvoxel (vertex-sharing) result:', transvoxelVSResult.vertices.l
 const transvoxelVSMesh = createMeshFromMCResult(app.graphicsDevice, transvoxelVSResult, { center: true });
 if (transvoxelVSMesh) {
   const tvSharedEntity = new pc.Entity('Transvoxel VS Cube');
-  tvSharedEntity.setPosition(meshPos[3], 0, 0);
+  tvSharedEntity.setPosition(meshPos[4], 0, 0);
   tvSharedEntity.setLocalScale(initialScale, initialScale, initialScale);
   tvSharedEntity.addComponent('render');
   tvSharedEntity.render.type = 'asset';
@@ -1165,7 +1178,7 @@ console.log('Transvoxel Extended result:', transvoxelExtResult.vertices.length /
 const transvoxelExtMesh = createMeshFromMCResult(app.graphicsDevice, transvoxelExtResult, { center: true });
 if (transvoxelExtMesh) {
   const tvxEntity = new pc.Entity('Transvoxel Extended Cube');
-  tvxEntity.setPosition(meshPos[4], 0, 0);
+  tvxEntity.setPosition(meshPos[5], 0, 0);
   tvxEntity.setLocalScale(initialScale, initialScale, initialScale);
   tvxEntity.addComponent('render');
   tvxEntity.render.type = 'asset';
@@ -1187,6 +1200,21 @@ if (extendedMesh) {
   extendedEntity.render.meshInstances = [new pc.MeshInstance(extendedMesh, chunkState.materials.extended)];
   compareRoot.addChild(extendedEntity);
   chunkState.extendedEntity = extendedEntity;
+}
+
+const extendedHalfedgeResult = runExtendedMarchingCubesHalfedge(mcRes, iso, fieldFn, true);
+console.log('Extended MC (half-edge) result:', extendedHalfedgeResult.vertices.length / 6, 'vertices,', extendedHalfedgeResult.indices.length / 3, 'triangles');
+
+const extendedHalfedgeMesh = createMeshFromMCResult(app.graphicsDevice, extendedHalfedgeResult, { center: true });
+if (extendedHalfedgeMesh) {
+  const extendedHalfedgeEntity = new pc.Entity('MC Extended Half-edge Cube');
+  extendedHalfedgeEntity.setPosition(meshPos[2], 0, 0);
+  extendedHalfedgeEntity.setLocalScale(initialScale, initialScale, initialScale);
+  extendedHalfedgeEntity.addComponent('render');
+  extendedHalfedgeEntity.render.type = 'asset';
+  extendedHalfedgeEntity.render.meshInstances = [new pc.MeshInstance(extendedHalfedgeMesh, chunkState.materials.extended)];
+  compareRoot.addChild(extendedHalfedgeEntity);
+  chunkState.extendedHalfedgeEntity = extendedHalfedgeEntity;
 }
 
 // 3D text labels: canvas texture on a quad, billboarded toward camera
@@ -1275,6 +1303,7 @@ function createLabelQuad(app, text, parentEntity) {
 const labelConfig = [
   { entity: () => chunkState.mcEntity, text: 'MC' },
   { entity: () => chunkState.extendedEntity, text: 'MC Extended' },
+  { entity: () => chunkState.extendedHalfedgeEntity, text: 'MC Ext (half-edge)' },
   { entity: () => chunkState.tvEntity, text: 'Transvoxel' },
   { entity: () => chunkState.tvSharedEntity, text: 'Transvoxel (VS)' },
   { entity: () => chunkState.tvxEntity, text: 'Transvoxel Extended' }
