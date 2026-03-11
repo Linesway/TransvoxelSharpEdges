@@ -11,6 +11,7 @@ import { runExtendedMarchingCubesHalfedge } from './mc/marching-cubes-extended-h
 import { runTransvoxelInterior } from './mc/transvoxel.js';
 import { runTransvoxelInteriorVertexSharing } from './mc/transvoxel-vertex-sharing.js';
 import { runTransvoxelExtended } from './mc/transvoxel-extended.js';
+import { runTransvoxelExtendedSharpNormals } from './mc/transvoxel-extended-sharpnormals.js';
 import { createMeshFromMCResult } from './mc/mc-mesh.js';
 import { createFpsCamera } from './camera/camera.js';
 
@@ -118,7 +119,7 @@ app.root.addChild(fillLight);
   document.body.appendChild(panel);
 })();
 
-// World 1: Compare (6 algorithms, single chunk). World 2: TVx only, grid of chunks, 3D Perlin.
+// World 1: Compare (7 algorithms, single chunk). World 2: TVx only, grid of chunks, 3D Perlin.
 const currentWorld = { value: 1 }; // 1 = Compare, 2 = TVx Terrain, 3 = Grid of cubes
 const world1State = {
   resolution: 24,
@@ -162,6 +163,7 @@ const chunkState = {
   tvEntity: null,
   tvSharedEntity: null,
   tvxEntity: null,
+  tvxSharpEntity: null,
   extendedEntity: null,
   extendedHalfedgeEntity: null,
   tvxChunkEntities: [], // World 2: one entity per chunk
@@ -187,15 +189,15 @@ function getFieldFn() {
   return insidePositive(cubeSDF);
 }
 
-/** Even x positions for the 6 mesh entities (MC, Extended, Extended Half-edge, TV, TV Shared, TVx). Perlin (3 or 4) uses wider spacing. */
+/** Even x positions for the 7 mesh entities. Spacing scales with chunkScale so cubes don't overlap when size is large. */
 function getMeshPositions() {
-  const isPerlin = world1State.sdfChoice === 3 || world1State.sdfChoice === 4;
-  const spacing = isPerlin ? 5 : 3;
-  const n = 6;
+  const baseSpacing = 2;
+  const spacing = baseSpacing * world1State.chunkScale;
+  const n = 7;
   const half = ((n - 1) / 2) * spacing;
   const pos = [];
   for (let i = 0; i < n; i++) pos.push(half - i * spacing);
-  return pos; // [0]=MC, [1]=Extended, [2]=Extended Half-edge, [3]=TV, [4]=TV Shared, [5]=TVx
+  return pos; // [0]=MC, [1]=Extended, [2]=Extended Half-edge, [3]=TV, [4]=TV Shared, [5]=TVx, [6]=TVx Sharp
 }
 
 function setWorldVisibility() {
@@ -479,7 +481,7 @@ function setWorldVisibility() {
   w2AlgoLabel.appendChild(document.createTextNode('Algorithm '));
   const w2AlgoSelect = document.createElement('select');
   w2AlgoSelect.style.cssText = 'margin-left:4px;font-size:12px;background:#333;color:#eee;border:1px solid #666;border-radius:4px;padding:2px 6px;';
-  w2AlgoSelect.innerHTML = '<option value="mc">MC</option><option value="extended">MC Extended</option><option value="extendedHalfedge">MC Extended (half-edge)</option><option value="transvoxel">Transvoxel</option><option value="transvoxelVS">Transvoxel (VS)</option><option value="transvoxelExtended">Transvoxel Extended</option>';
+  w2AlgoSelect.innerHTML = '<option value="mc">MC</option><option value="extended">MC Extended</option><option value="extendedHalfedge">MC Extended (half-edge)</option><option value="transvoxel">Transvoxel</option><option value="transvoxelVS">Transvoxel (VS)</option><option value="transvoxelExtended">Transvoxel Extended</option><option value="transvoxelExtendedSharp">Transvoxel Extended (sharp normals)</option>';
   w2AlgoSelect.value = world2State.algorithm;
   w2AlgoLabel.appendChild(w2AlgoSelect);
 
@@ -726,7 +728,7 @@ function setWorldVisibility() {
   w3AlgoLabel.appendChild(document.createTextNode('Algorithm '));
   const w3AlgoSelect = document.createElement('select');
   w3AlgoSelect.style.cssText = 'margin-left:4px;font-size:12px;background:#333;color:#eee;border:1px solid #666;border-radius:4px;padding:2px 6px;';
-  w3AlgoSelect.innerHTML = '<option value="mc">MC</option><option value="extended">MC Extended</option><option value="extendedHalfedge">MC Extended (half-edge)</option><option value="transvoxel">Transvoxel</option><option value="transvoxelVS">Transvoxel (VS)</option><option value="transvoxelExtended">Transvoxel Extended</option>';
+  w3AlgoSelect.innerHTML = '<option value="mc">MC</option><option value="extended">MC Extended</option><option value="extendedHalfedge">MC Extended (half-edge)</option><option value="transvoxel">Transvoxel</option><option value="transvoxelVS">Transvoxel (VS)</option><option value="transvoxelExtended">Transvoxel Extended</option><option value="transvoxelExtendedSharp">Transvoxel Extended (sharp normals)</option>';
   w3AlgoSelect.value = world3State.algorithm;
   w3AlgoLabel.appendChild(w3AlgoSelect);
 
@@ -877,6 +879,11 @@ function setWorldVisibility() {
       if (extendedHalfedgeMesh && chunkState.extendedHalfedgeEntity && chunkState.materials.extended) {
         chunkState.extendedHalfedgeEntity.render.meshInstances = [new pc.MeshInstance(extendedHalfedgeMesh, chunkState.materials.extended)];
       }
+      const transvoxelSharpResult = runTransvoxelExtendedSharpNormals(mcRes, iso, fieldFn, { flipEdges: world1State.flipEdges, featureAngleDeg: world1State.featureAngleDeg, noFeatures: world1State.noFeatures });
+      const tvxSharpMesh = createMeshFromMCResult(app.graphicsDevice, transvoxelSharpResult, { center: true });
+      if (tvxSharpMesh && chunkState.tvxSharpEntity && chunkState.materials.tvx) {
+        chunkState.tvxSharpEntity.render.meshInstances = [new pc.MeshInstance(tvxSharpMesh, chunkState.materials.tvx)];
+      }
       const pos = getMeshPositions();
       if (chunkState.mcEntity) { chunkState.mcEntity.setPosition(pos[0], 0, 0); chunkState.mcEntity.setLocalScale(scale, scale, scale); }
       if (chunkState.extendedEntity) { chunkState.extendedEntity.setPosition(pos[1], 0, 0); chunkState.extendedEntity.setLocalScale(scale, scale, scale); }
@@ -884,6 +891,7 @@ function setWorldVisibility() {
       if (chunkState.tvEntity) { chunkState.tvEntity.setPosition(pos[3], 0, 0); chunkState.tvEntity.setLocalScale(scale, scale, scale); }
       if (chunkState.tvSharedEntity) { chunkState.tvSharedEntity.setPosition(pos[4], 0, 0); chunkState.tvSharedEntity.setLocalScale(scale, scale, scale); }
       if (chunkState.tvxEntity) { chunkState.tvxEntity.setPosition(pos[5], 0, 0); chunkState.tvxEntity.setLocalScale(scale, scale, scale); }
+      if (chunkState.tvxSharpEntity) { chunkState.tvxSharpEntity.setPosition(pos[6], 0, 0); chunkState.tvxSharpEntity.setLocalScale(scale, scale, scale); }
       console.log('World 1 rebuilt: resolution=', mcRes, 'iso=', iso, 'sdf=', world1State.sdfChoice, 'scale=', scale);
     } else if (w === 2) {
       world2State.resolution = Math.max(6, Math.min(40, parseInt(w2ResInput.value, 10) || 20));
@@ -942,9 +950,10 @@ function setWorldVisibility() {
         if (algo === 'extendedHalfedge') return runExtendedMarchingCubesHalfedge(mcRes, iso, fieldFn, flip, { featureAngleDeg: world2State.featureAngleDeg, noFeatures: world2State.noFeatures });
         if (algo === 'transvoxel') return runTransvoxelInterior(mcRes, iso, fieldFn);
         if (algo === 'transvoxelVS') return runTransvoxelInteriorVertexSharing(mcRes, iso, fieldFn);
+        if (algo === 'transvoxelExtendedSharp') return runTransvoxelExtendedSharpNormals(mcRes, iso, fieldFn, { flipEdges: flip, featureAngleDeg: world2State.featureAngleDeg, noFeatures: world2State.noFeatures });
         return runTransvoxelExtended(mcRes, iso, fieldFn, { flipEdges: flip, featureAngleDeg: world2State.featureAngleDeg, noFeatures: world2State.noFeatures });
       };
-      const algoMaterialKey = { mc: 'mc', extended: 'extended', extendedHalfedge: 'extended', transvoxel: 'tv', transvoxelVS: 'tvShared', transvoxelExtended: 'tvx' }[algo] || 'tvx';
+      const algoMaterialKey = { mc: 'mc', extended: 'extended', extendedHalfedge: 'extended', transvoxel: 'tv', transvoxelVS: 'tvShared', transvoxelExtended: 'tvx', transvoxelExtendedSharp: 'tvx' }[algo] || 'tvx';
       const terrainMat = chunkState.materials[algoMaterialKey];
 
       for (let cz = 0; cz < gz; cz++) {
@@ -1016,9 +1025,10 @@ function setWorldVisibility() {
         if (algo === 'extendedHalfedge') return runExtendedMarchingCubesHalfedge(mcRes, iso, fn, flip, { featureAngleDeg: world3State.featureAngleDeg, noFeatures: world3State.noFeatures });
         if (algo === 'transvoxel') return runTransvoxelInterior(mcRes, iso, fn);
         if (algo === 'transvoxelVS') return runTransvoxelInteriorVertexSharing(mcRes, iso, fn);
+        if (algo === 'transvoxelExtendedSharp') return runTransvoxelExtendedSharpNormals(mcRes, iso, fn, { flipEdges: flip, featureAngleDeg: world3State.featureAngleDeg, noFeatures: world3State.noFeatures });
         return runTransvoxelExtended(mcRes, iso, fn, { flipEdges: flip, featureAngleDeg: world3State.featureAngleDeg, noFeatures: world3State.noFeatures });
       };
-      const algoMaterialKey = { mc: 'mc', extended: 'extended', extendedHalfedge: 'extended', transvoxel: 'tv', transvoxelVS: 'tvShared', transvoxelExtended: 'tvx' }[algo] || 'tvx';
+      const algoMaterialKey = { mc: 'mc', extended: 'extended', extendedHalfedge: 'extended', transvoxel: 'tv', transvoxelVS: 'tvShared', transvoxelExtended: 'tvx', transvoxelExtendedSharp: 'tvx' }[algo] || 'tvx';
       const mat = chunkState.materials[algoMaterialKey];
       const result = runAlgo(fieldFn);
       const mesh = createMeshFromMCResult(app.graphicsDevice, result, { center: true });
@@ -1187,6 +1197,19 @@ if (transvoxelExtMesh) {
   chunkState.tvxEntity = tvxEntity;
 }
 
+const transvoxelSharpResult = runTransvoxelExtendedSharpNormals(mcRes, iso, fieldFn, { flipEdges: true });
+const transvoxelSharpMesh = createMeshFromMCResult(app.graphicsDevice, transvoxelSharpResult, { center: true });
+if (transvoxelSharpMesh) {
+  const tvxSharpEntity = new pc.Entity('Transvoxel Extended Sharp Normals Cube');
+  tvxSharpEntity.setPosition(meshPos[6], 0, 0);
+  tvxSharpEntity.setLocalScale(initialScale, initialScale, initialScale);
+  tvxSharpEntity.addComponent('render');
+  tvxSharpEntity.render.type = 'asset';
+  tvxSharpEntity.render.meshInstances = [new pc.MeshInstance(transvoxelSharpMesh, chunkState.materials.tvx)];
+  compareRoot.addChild(tvxSharpEntity);
+  chunkState.tvxSharpEntity = tvxSharpEntity;
+}
+
 const extendedResult = runExtendedMarchingCubes(mcRes, iso, fieldFn, true);
 console.log('Extended MC result:', extendedResult.vertices.length / 6, 'vertices,', extendedResult.indices.length / 3, 'triangles');
 
@@ -1306,7 +1329,8 @@ const labelConfig = [
   { entity: () => chunkState.extendedHalfedgeEntity, text: 'MC Ext (half-edge)' },
   { entity: () => chunkState.tvEntity, text: 'Transvoxel' },
   { entity: () => chunkState.tvSharedEntity, text: 'Transvoxel (VS)' },
-  { entity: () => chunkState.tvxEntity, text: 'Transvoxel Extended' }
+  { entity: () => chunkState.tvxEntity, text: 'Transvoxel Extended' },
+  { entity: () => chunkState.tvxSharpEntity, text: 'Transvoxel Ext (sharp)' }
 ];
 
 const labelEntities = [];

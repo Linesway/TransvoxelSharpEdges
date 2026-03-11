@@ -214,11 +214,13 @@ function flipEdges(vertices, indices, featureVertices) {
  * @param {number} resolution
  * @param {number} isovalue
  * @param {(x:number,y:number,z:number)=>number} fieldFn
- * @param {{ featureAngleRad?: number, cornerAngleRad?: number, flipEdges?: boolean, noFeatures?: boolean }} options - featureAngleRad/cornerAngleRad in radians (defaults 0.9, 0.7); flipEdges (default true); noFeatures=true disables sharp features
+ * @param {{ featureAngleRad?: number, featureAngleDeg?: number, cornerAngleRad?: number, flipEdges?: boolean, noFeatures?: boolean }} options - featureAngleDeg (degrees, default 30) or featureAngleRad; cornerAngleRad in radians (default 0.7); flipEdges (default true); noFeatures=true disables sharp features
  * @returns {{ vertices:number[], indices:number[] }}
  */
 export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {}) {
-  const featureAngleRad = options.featureAngleRad ?? 0.9;
+  const featureAngleRad = options.featureAngleDeg != null
+    ? (options.featureAngleDeg * Math.PI) / 180
+    : (options.featureAngleRad ?? 0.9);
   const cornerAngleRad = options.cornerAngleRad ?? 0.7;
   const noFeatures = options.noFeatures === true;
 
@@ -388,5 +390,5 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
   const flipEdgesOption = options.flipEdges === true; // only flip when explicitly true
   if (flipEdgesOption) flipEdges(vertices, indices, featureVertices);
   console.log('Transvoxel Extended: found', counts.n_edges, 'edge features,', counts.n_corners, 'corner features');
-  return { vertices, indices };
+  return { vertices, indices, featureVertices };
 }
