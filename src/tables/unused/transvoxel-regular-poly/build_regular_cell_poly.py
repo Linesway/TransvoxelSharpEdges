@@ -173,6 +173,7 @@ def get_polygon_components(triangles):
 
 
 def build_row(components):
+    """components = list of polygons; each poly = vertex slot indices (boundary)."""
     row = [-1] * ROW_SIZE
     k = 0
     row[k] = len(components)
@@ -197,6 +198,10 @@ def build_regular_cell_poly_table():
         cell = REGULAR_CELL_DATA[class_idx]
         tris = get_triangles(cell)
         comps = get_polygon_components(tris)
+        n_c4_components = len(partition_into_components(tris))
+        assert len(comps) == n_c4_components, (
+            f"case {case_idx}: table components {len(comps)} != C4 partition count {n_c4_components}"
+        )
         table.append(build_row(comps))
     return table
 

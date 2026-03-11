@@ -4,7 +4,7 @@
  */
 import * as pc from 'playcanvas';
 import * as sdf from './noise/sdf.js';
-const { insidePositive, cubeSDF, sphereSDF, createPerlin2DSDF, createPerlin2DUnionCubeSDF, createPerlin3DField } = sdf;
+const { insidePositive, cubeSDF, sphereSDF, createPerlin2DSDF, createPerlin2DUnionCubeSDF, createPerlin3DField, createGridOfCubesSDF } = sdf;
 import { runMarchingCubes } from './mc/marching-cubes.js';
 import { runExtendedMarchingCubes } from './mc/marching-cubes-extended.js';
 import { runTransvoxelInterior } from './mc/transvoxel.js';
@@ -118,7 +118,7 @@ app.root.addChild(fillLight);
 })();
 
 // World 1: Compare (5 algorithms, single chunk). World 2: TVx only, grid of chunks, 3D Perlin.
-const currentWorld = { value: 1 }; // 1 = Compare, 2 = TVx Terrain
+const currentWorld = { value: 1 }; // 1 = Compare, 2 = TVx Terrain, 3 = Grid of cubes
 const world1State = {
   resolution: 24,
   iso: 0,
@@ -144,6 +144,18 @@ const world2State = {
   noFeatures: false,
   algorithm: 'transvoxelExtended' // mc | extended | transvoxel | transvoxelVS | transvoxelExtended
 };
+const world3State = {
+  resolution: 24,
+  iso: 0,
+  chunkScale: 1,
+  gridNx: 3,
+  gridNy: 3,
+  gridNz: 3,
+  flipEdges: true,
+  featureAngleDeg: 30,
+  noFeatures: false,
+  algorithm: 'transvoxelExtended'
+};
 const chunkState = {
   mcEntity: null,
   tvEntity: null,
@@ -151,6 +163,8 @@ const chunkState = {
   tvxEntity: null,
   extendedEntity: null,
   tvxChunkEntities: [], // World 2: one entity per chunk
+  cubesRoot: null,       // World 3: root for grid-of-cubes mesh
+  cubesMeshEntity: null,
   materials: null
 };
 
@@ -183,23 +197,27 @@ function setWorldVisibility() {
   const w = currentWorld.value;
   const compareRoot = chunkState.compareRoot;
   const terrainRoot = chunkState.terrainRoot;
+  const cubesRoot = chunkState.cubesRoot;
   if (compareRoot) compareRoot.enabled = (w === 1);
   if (terrainRoot) terrainRoot.enabled = (w === 2);
+  if (cubesRoot) cubesRoot.enabled = (w === 3);
 }
 
 (function () {
   const panel = document.createElement('div');
   panel.id = 'chunk-control';
-  panel.style.cssText = 'position:fixed;top:12px;left:12px;padding:10px 14px;background:rgba(0,0,0,0.7);border-radius:8px;font-size:12px;color:#e0e0e0;z-index:9999;font-family:system-ui,sans-serif;min-width:180px;';
+  panel.style.cssText = 'position:fixed;top:12px;left:12px;padding:10px 14px;background:rgba(0,0,0,0.7);border-radius:8px;font-size:12px;color:#e0e0e0;z-index:9999;font-family:system-ui,sans-serif;min-width:220px;';
 
   // World selector — always visible so you can switch worlds
   const worldRow = document.createElement('div');
   worldRow.style.cssText = 'margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #555;';
   worldRow.appendChild(document.createTextNode('World: '));
   const worldSelect = document.createElement('select');
-  worldSelect.style.cssText = 'font-size:12px;background:#333;color:#eee;border:1px solid #666;border-radius:4px;padding:4px 8px;margin-left:6px;cursor:pointer;';
-  worldSelect.innerHTML = '<option value="1">1: Compare (5 algorithms)</option><option value="2">2: TVx Terrain (chunk grid)</option>';
-  worldSelect.title = 'Switch between Compare view and TVx Terrain view';
+  worldSelect.style.cssText = 'font-size:12px;background:#333;color:#eee;border:1px solid #666;border-radius:4px;padding:4px 8px;margin-left:6px;cursor:pointer;min-width:200px;';
+  worldSelect.title = 'Switch between Compare, TVx Terrain, and Grid of cubes';
+  const opt1 = document.createElement('option'); opt1.value = '1'; opt1.textContent = '1: Compare (5 algorithms)'; worldSelect.appendChild(opt1);
+  const opt2 = document.createElement('option'); opt2.value = '2'; opt2.textContent = '2: TVx Terrain (chunk grid)'; worldSelect.appendChild(opt2);
+  const opt3 = document.createElement('option'); opt3.value = '3'; opt3.textContent = '3: Grid of cubes'; worldSelect.appendChild(opt3);
   worldRow.appendChild(worldSelect);
   const worldBtns = document.createElement('span');
   worldBtns.style.marginLeft = '8px';
@@ -209,12 +227,17 @@ function setWorldVisibility() {
   const btnTerrain = document.createElement('button');
   btnTerrain.textContent = 'TVx Terrain';
   btnTerrain.style.cssText = 'font-size:11px;padding:2px 6px;cursor:pointer;background:#444;color:#eee;border:1px solid #666;border-radius:4px;margin-left:2px;';
+  const btnCubes = document.createElement('button');
+  btnCubes.textContent = 'Grid of cubes';
+  btnCubes.style.cssText = 'font-size:11px;padding:2px 6px;cursor:pointer;background:#444;color:#eee;border:1px solid #666;border-radius:4px;margin-left:2px;';
   worldBtns.appendChild(btnCompare);
   worldBtns.appendChild(btnTerrain);
+  worldBtns.appendChild(btnCubes);
   worldRow.appendChild(worldBtns);
   panel.appendChild(worldRow);
   btnCompare.addEventListener('click', () => { worldSelect.value = '1'; showSectionForWorld(); });
   btnTerrain.addEventListener('click', () => { worldSelect.value = '2'; showSectionForWorld(); });
+  btnCubes.addEventListener('click', () => { worldSelect.value = '3'; showSectionForWorld(); });
 
   // ---- World 1 section ----
   const world1Section = document.createElement('div');
@@ -596,17 +619,191 @@ function setWorldVisibility() {
   w2PerlinInput.addEventListener('input', () => { w2PerlinSpan.textContent = Number(w2PerlinInput.value).toFixed(1); });
   w2FeatureAngleInput.addEventListener('input', () => { w2FeatureAngleSpan.textContent = w2FeatureAngleInput.value + '°'; });
 
+  // ---- World 3 section (grid of cubes) ----
+  const world3Section = document.createElement('div');
+  world3Section.id = 'world3-section';
+  world3Section.style.display = 'none';
+
+  const w3ResLabel = document.createElement('label');
+  w3ResLabel.style.display = 'block';
+  w3ResLabel.style.marginTop = '8px';
+  const w3ResSpan = document.createElement('span');
+  w3ResSpan.textContent = world3State.resolution;
+  w3ResLabel.appendChild(document.createTextNode('Resolution '));
+  w3ResLabel.appendChild(w3ResSpan);
+  const w3ResInput = document.createElement('input');
+  w3ResInput.type = 'range';
+  w3ResInput.min = '12';
+  w3ResInput.max = '48';
+  w3ResInput.value = String(world3State.resolution);
+  w3ResInput.style.width = '140px';
+  w3ResInput.style.display = 'block';
+
+  const w3IsoLabel = document.createElement('label');
+  w3IsoLabel.style.display = 'block';
+  w3IsoLabel.style.marginTop = '8px';
+  const w3IsoSpan = document.createElement('span');
+  w3IsoSpan.textContent = world3State.iso.toFixed(2);
+  w3IsoLabel.appendChild(document.createTextNode('Iso '));
+  w3IsoLabel.appendChild(w3IsoSpan);
+  const w3IsoInput = document.createElement('input');
+  w3IsoInput.type = 'range';
+  w3IsoInput.min = '-0.1';
+  w3IsoInput.max = '0.1';
+  w3IsoInput.step = '0.01';
+  w3IsoInput.value = String(world3State.iso);
+  w3IsoInput.style.width = '140px';
+  w3IsoInput.style.display = 'block';
+
+  const w3ScaleLabel = document.createElement('label');
+  w3ScaleLabel.style.display = 'block';
+  w3ScaleLabel.style.marginTop = '8px';
+  const w3ScaleSpan = document.createElement('span');
+  w3ScaleSpan.textContent = world3State.chunkScale.toFixed(1);
+  w3ScaleLabel.appendChild(document.createTextNode('Chunk scale '));
+  w3ScaleLabel.appendChild(w3ScaleSpan);
+  const w3ScaleInput = document.createElement('input');
+  w3ScaleInput.type = 'range';
+  w3ScaleInput.min = '0.5';
+  w3ScaleInput.max = '3';
+  w3ScaleInput.step = '0.25';
+  w3ScaleInput.value = String(world3State.chunkScale);
+  w3ScaleInput.style.width = '140px';
+  w3ScaleInput.style.display = 'block';
+
+  const w3GridLabel = document.createElement('div');
+  w3GridLabel.style.marginTop = '8px';
+  w3GridLabel.style.fontWeight = '600';
+  w3GridLabel.textContent = 'Cube grid (n×n×n)';
+  const w3NxLabel = document.createElement('label');
+  w3NxLabel.style.display = 'block';
+  const w3NxSpan = document.createElement('span');
+  w3NxSpan.textContent = world3State.gridNx;
+  w3NxLabel.appendChild(document.createTextNode('Nx '));
+  w3NxLabel.appendChild(w3NxSpan);
+  const w3NxInput = document.createElement('input');
+  w3NxInput.type = 'range';
+  w3NxInput.min = '1';
+  w3NxInput.max = '6';
+  w3NxInput.value = String(world3State.gridNx);
+  w3NxInput.style.width = '140px';
+  w3NxInput.style.display = 'block';
+  const w3NyLabel = document.createElement('label');
+  w3NyLabel.style.display = 'block';
+  const w3NySpan = document.createElement('span');
+  w3NySpan.textContent = world3State.gridNy;
+  w3NyLabel.appendChild(document.createTextNode('Ny '));
+  w3NyLabel.appendChild(w3NySpan);
+  const w3NyInput = document.createElement('input');
+  w3NyInput.type = 'range';
+  w3NyInput.min = '1';
+  w3NyInput.max = '6';
+  w3NyInput.value = String(world3State.gridNy);
+  w3NyInput.style.width = '140px';
+  w3NyInput.style.display = 'block';
+  const w3NzLabel = document.createElement('label');
+  w3NzLabel.style.display = 'block';
+  const w3NzSpan = document.createElement('span');
+  w3NzSpan.textContent = world3State.gridNz;
+  w3NzLabel.appendChild(document.createTextNode('Nz '));
+  w3NzLabel.appendChild(w3NzSpan);
+  const w3NzInput = document.createElement('input');
+  w3NzInput.type = 'range';
+  w3NzInput.min = '1';
+  w3NzInput.max = '6';
+  w3NzInput.value = String(world3State.gridNz);
+  w3NzInput.style.width = '140px';
+  w3NzInput.style.display = 'block';
+
+  const w3AlgoLabel = document.createElement('label');
+  w3AlgoLabel.style.display = 'block';
+  w3AlgoLabel.style.marginTop = '8px';
+  w3AlgoLabel.appendChild(document.createTextNode('Algorithm '));
+  const w3AlgoSelect = document.createElement('select');
+  w3AlgoSelect.style.cssText = 'margin-left:4px;font-size:12px;background:#333;color:#eee;border:1px solid #666;border-radius:4px;padding:2px 6px;';
+  w3AlgoSelect.innerHTML = '<option value="mc">MC</option><option value="extended">MC Extended</option><option value="transvoxel">Transvoxel</option><option value="transvoxelVS">Transvoxel (VS)</option><option value="transvoxelExtended">Transvoxel Extended</option>';
+  w3AlgoSelect.value = world3State.algorithm;
+  w3AlgoLabel.appendChild(w3AlgoSelect);
+
+  const w3FeatureAngleLabel = document.createElement('label');
+  w3FeatureAngleLabel.style.display = 'block';
+  w3FeatureAngleLabel.style.marginTop = '8px';
+  const w3FeatureAngleSpan = document.createElement('span');
+  w3FeatureAngleSpan.textContent = world3State.featureAngleDeg + '°';
+  w3FeatureAngleLabel.appendChild(document.createTextNode('Feature angle '));
+  w3FeatureAngleLabel.appendChild(w3FeatureAngleSpan);
+  const w3FeatureAngleInput = document.createElement('input');
+  w3FeatureAngleInput.type = 'range';
+  w3FeatureAngleInput.min = '0';
+  w3FeatureAngleInput.max = '90';
+  w3FeatureAngleInput.step = '5';
+  w3FeatureAngleInput.value = String(world3State.featureAngleDeg);
+  w3FeatureAngleInput.style.width = '140px';
+  w3FeatureAngleInput.style.display = 'block';
+
+  const flipEdgesLabelW3 = document.createElement('label');
+  flipEdgesLabelW3.style.display = 'block';
+  flipEdgesLabelW3.style.marginTop = '10px';
+  flipEdgesLabelW3.style.cursor = 'pointer';
+  const flipEdgesCheckW3 = document.createElement('input');
+  flipEdgesCheckW3.type = 'checkbox';
+  flipEdgesCheckW3.checked = world3State.flipEdges;
+  flipEdgesCheckW3.style.marginRight = '6px';
+  flipEdgesLabelW3.appendChild(flipEdgesCheckW3);
+  flipEdgesLabelW3.appendChild(document.createTextNode('Triangle flip'));
+
+  const noFeaturesLabelW3 = document.createElement('label');
+  noFeaturesLabelW3.style.display = 'block';
+  noFeaturesLabelW3.style.marginTop = '8px';
+  noFeaturesLabelW3.style.cursor = 'pointer';
+  const noFeaturesCheckW3 = document.createElement('input');
+  noFeaturesCheckW3.type = 'checkbox';
+  noFeaturesCheckW3.checked = world3State.noFeatures;
+  noFeaturesCheckW3.style.marginRight = '6px';
+  noFeaturesLabelW3.appendChild(noFeaturesCheckW3);
+  noFeaturesLabelW3.appendChild(document.createTextNode('No features (override)'));
+
+  world3Section.appendChild(w3ResLabel);
+  world3Section.appendChild(w3ResInput);
+  world3Section.appendChild(w3IsoLabel);
+  world3Section.appendChild(w3IsoInput);
+  world3Section.appendChild(w3ScaleLabel);
+  world3Section.appendChild(w3ScaleInput);
+  world3Section.appendChild(w3GridLabel);
+  world3Section.appendChild(w3NxLabel);
+  world3Section.appendChild(w3NxInput);
+  world3Section.appendChild(w3NyLabel);
+  world3Section.appendChild(w3NyInput);
+  world3Section.appendChild(w3NzLabel);
+  world3Section.appendChild(w3NzInput);
+  world3Section.appendChild(w3AlgoLabel);
+  world3Section.appendChild(w3AlgoSelect);
+  world3Section.appendChild(w3FeatureAngleLabel);
+  world3Section.appendChild(w3FeatureAngleInput);
+  world3Section.appendChild(flipEdgesLabelW3);
+  world3Section.appendChild(noFeaturesLabelW3);
+
+  w3ResInput.addEventListener('input', () => { w3ResSpan.textContent = w3ResInput.value; });
+  w3IsoInput.addEventListener('input', () => { w3IsoSpan.textContent = Number(w3IsoInput.value).toFixed(2); });
+  w3ScaleInput.addEventListener('input', () => { w3ScaleSpan.textContent = Number(w3ScaleInput.value).toFixed(1); });
+  w3NxInput.addEventListener('input', () => { w3NxSpan.textContent = w3NxInput.value; });
+  w3NyInput.addEventListener('input', () => { w3NySpan.textContent = w3NyInput.value; });
+  w3NzInput.addEventListener('input', () => { w3NzSpan.textContent = w3NzInput.value; });
+  w3FeatureAngleInput.addEventListener('input', () => { w3FeatureAngleSpan.textContent = w3FeatureAngleInput.value + '°'; });
+
   function showSectionForWorld() {
     const w = parseInt(worldSelect.value, 10);
     currentWorld.value = w;
     world1Section.style.display = (w === 1) ? 'block' : 'none';
     world2Section.style.display = (w === 2) ? 'block' : 'none';
+    world3Section.style.display = (w === 3) ? 'block' : 'none';
     setWorldVisibility();
   }
   worldSelect.addEventListener('change', showSectionForWorld);
 
   panel.appendChild(world1Section);
   panel.appendChild(world2Section);
+  panel.appendChild(world3Section);
   panel.appendChild(applyBtn);
   document.body.appendChild(panel);
 
@@ -677,7 +874,7 @@ function setWorldVisibility() {
       if (chunkState.tvSharedEntity) { chunkState.tvSharedEntity.setPosition(pos[3], 0, 0); chunkState.tvSharedEntity.setLocalScale(scale, scale, scale); }
       if (chunkState.tvxEntity) { chunkState.tvxEntity.setPosition(pos[4], 0, 0); chunkState.tvxEntity.setLocalScale(scale, scale, scale); }
       console.log('World 1 rebuilt: resolution=', mcRes, 'iso=', iso, 'sdf=', world1State.sdfChoice, 'scale=', scale);
-    } else {
+    } else if (w === 2) {
       world2State.resolution = Math.max(6, Math.min(40, parseInt(w2ResInput.value, 10) || 20));
       world2State.iso = Math.max(0.2, Math.min(0.8, Number(w2IsoInput.value) || 0.5));
       world2State.chunkScale = Math.max(0.25, Math.min(3, Number(w2ScaleInput.value) || 1));
@@ -757,6 +954,72 @@ function setWorldVisibility() {
         }
       }
       console.log('World 2 rebuilt: grid=', gx, 'x', gy, 'x', gz, 'resolution=', mcRes, 'iso=', iso, 'scale=', scale);
+    } else if (w === 3) {
+      world3State.resolution = Math.max(6, Math.min(48, parseInt(w3ResInput.value, 10) || 24));
+      world3State.iso = Number(w3IsoInput.value) || 0;
+      world3State.chunkScale = Math.max(0.25, Math.min(3, Number(w3ScaleInput.value) || 1));
+      world3State.gridNx = Math.max(1, Math.min(6, parseInt(w3NxInput.value, 10) || 3));
+      world3State.gridNy = Math.max(1, Math.min(6, parseInt(w3NyInput.value, 10) || 3));
+      world3State.gridNz = Math.max(1, Math.min(6, parseInt(w3NzInput.value, 10) || 3));
+      world3State.flipEdges = flipEdgesCheckW3.checked;
+      world3State.noFeatures = noFeaturesCheckW3.checked;
+      world3State.featureAngleDeg = (() => { const v = parseInt(w3FeatureAngleInput.value, 10); return Math.max(0, Math.min(90, isNaN(v) ? 30 : v)); })();
+      world3State.algorithm = w3AlgoSelect.value || 'transvoxelExtended';
+      w3ResInput.value = String(world3State.resolution);
+      w3IsoInput.value = String(world3State.iso);
+      w3ScaleInput.value = String(world3State.chunkScale);
+      w3NxInput.value = String(world3State.gridNx);
+      w3NyInput.value = String(world3State.gridNy);
+      w3NzInput.value = String(world3State.gridNz);
+      w3ResSpan.textContent = world3State.resolution;
+      w3IsoSpan.textContent = world3State.iso.toFixed(2);
+      w3ScaleSpan.textContent = world3State.chunkScale.toFixed(1);
+      w3NxSpan.textContent = world3State.gridNx;
+      w3NySpan.textContent = world3State.gridNy;
+      w3NzSpan.textContent = world3State.gridNz;
+      w3FeatureAngleInput.value = String(world3State.featureAngleDeg);
+      w3FeatureAngleSpan.textContent = world3State.featureAngleDeg + '°';
+      flipEdgesCheckW3.checked = world3State.flipEdges;
+      noFeaturesCheckW3.checked = world3State.noFeatures;
+      w3AlgoSelect.value = world3State.algorithm;
+
+      const cubesRoot = chunkState.cubesRoot;
+      if (!cubesRoot) return;
+      if (chunkState.cubesMeshEntity && chunkState.cubesMeshEntity.parent) {
+        chunkState.cubesMeshEntity.parent.removeChild(chunkState.cubesMeshEntity);
+        chunkState.cubesMeshEntity = null;
+      }
+      const mcRes = world3State.resolution;
+      const scale = world3State.chunkScale;
+      const iso = world3State.iso;
+      const nx = world3State.gridNx;
+      const ny = world3State.gridNy;
+      const nz = world3State.gridNz;
+      const fieldFn = insidePositive(createGridOfCubesSDF({ nx, ny, nz }));
+      const algo = world3State.algorithm;
+      const flip = world3State.flipEdges;
+      const runAlgo = (fn) => {
+        if (algo === 'mc') return runMarchingCubes(mcRes, iso, fn);
+        if (algo === 'extended') return runExtendedMarchingCubes(mcRes, iso, fn, flip, { featureAngleDeg: world3State.featureAngleDeg, noFeatures: world3State.noFeatures });
+        if (algo === 'transvoxel') return runTransvoxelInterior(mcRes, iso, fn);
+        if (algo === 'transvoxelVS') return runTransvoxelInteriorVertexSharing(mcRes, iso, fn);
+        return runTransvoxelExtended(mcRes, iso, fn, { flipEdges: flip, featureAngleDeg: world3State.featureAngleDeg, noFeatures: world3State.noFeatures });
+      };
+      const algoMaterialKey = { mc: 'mc', extended: 'extended', transvoxel: 'tv', transvoxelVS: 'tvShared', transvoxelExtended: 'tvx' }[algo] || 'tvx';
+      const mat = chunkState.materials[algoMaterialKey];
+      const result = runAlgo(fieldFn);
+      const mesh = createMeshFromMCResult(app.graphicsDevice, result, { center: true });
+      if (mesh && mat) {
+        const entity = new pc.Entity('Grid of Cubes Mesh');
+        entity.setPosition(0, 0, 0);
+        entity.setLocalScale(scale, scale, scale);
+        entity.addComponent('render');
+        entity.render.type = 'asset';
+        entity.render.meshInstances = [new pc.MeshInstance(mesh, mat)];
+        cubesRoot.addChild(entity);
+        chunkState.cubesMeshEntity = entity;
+      }
+      console.log('World 3 rebuilt: grid=', nx, 'x', ny, 'x', nz, 'resolution=', mcRes, 'iso=', iso, 'scale=', scale);
     }
     setWorldVisibility();
   };
@@ -772,6 +1035,11 @@ const terrainRoot = new pc.Entity('TVx Terrain Root');
 terrainRoot.enabled = false;
 app.root.addChild(terrainRoot);
 chunkState.terrainRoot = terrainRoot;
+
+const cubesRoot = new pc.Entity('Grid of Cubes Root');
+cubesRoot.enabled = false;
+app.root.addChild(cubesRoot);
+chunkState.cubesRoot = cubesRoot;
 
 // Default cube (only visible in World 1)
 const defaultBox = new pc.Entity('Default Box');

@@ -94,6 +94,35 @@ function createPerlin3DField(opts = {}, offsetX = 0, offsetY = 0, offsetZ = 0) {
 }
 
 /**
+ * Grid of cubes SDF: union of nx×ny×nz axis-aligned cubes in [0,1]^3.
+ * Cubes are spaced so they do not intersect (each cube has size ~0.8/n per axis, gap ~0.2/n).
+ * opts: { nx, ny, nz } (default 3, 3, 3). Returns negative inside any cube.
+ */
+function createGridOfCubesSDF(opts = {}) {
+  const nx = Math.max(1, opts.nx ?? 3);
+  const ny = Math.max(1, opts.ny ?? 3);
+  const nz = Math.max(1, opts.nz ?? 3);
+  const hx = 0.4 / nx;
+  const hy = 0.4 / ny;
+  const hz = 0.4 / nz;
+  return function gridOfCubesSDF(x, y, z) {
+    let d = Infinity;
+    for (let k = 0; k < nz; k++) {
+      for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+          const cx = (i + 0.5) / nx;
+          const cy = (j + 0.5) / ny;
+          const cz = (k + 0.5) / nz;
+          const b = boxSDF(x, y, z, cx, cy, cz, hx, hy, hz);
+          if (b < d) d = b;
+        }
+      }
+    }
+    return d;
+  };
+}
+
+/**
  * Wraps an SDF so that "inside" (negative) becomes positive for marching cubes
  * that use "value > iso" for inside. Use with iso = 0.
  */
@@ -110,5 +139,6 @@ export {
   createPerlin2DSDF,
   createPerlin2DUnionCubeSDF,
   createPerlin3DField,
+  createGridOfCubesSDF,
   insidePositive
 };

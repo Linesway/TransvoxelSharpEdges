@@ -5,8 +5,8 @@
  * - places feature vertices via IsoEx-style SVD solve
  * - triangulates via fan around feature point or fallback poly triangulation
  */
-import { regularVertexData, regularCellClass, regularCellData } from '../tables/transvoxel-tables.js';
-import { regularCellPolyTable } from '../tables/transvoxel-extended-tables.js';
+import { regularVertexData } from '../tables/transvoxel-tables.js';
+import { regularCellPolyTable, polyTable } from '../tables/transvoxel-extended-tables.js';
 import { svdSolve3 } from '../math/svd-solve3.js';
 
 // C4 / Transvoxel corner convention.
@@ -17,44 +17,6 @@ const CORNER_DELTA = [
 
 function edgeKey(vertexIndexA, vertexIndexB) {
   return vertexIndexA < vertexIndexB ? `${vertexIndexA},${vertexIndexB}` : `${vertexIndexB},${vertexIndexA}`;
-}
-
-/** Partition C4 triangles by connectivity (share an edge). Returns array of components; each component is array of [a,b,c] triangles. */
-function partitionC4Triangles(cell) {
-  const nTri = cell.geometryCounts & 0x0f;
-  const vi = cell.vertexIndex;
-  const triangles = [];
-  for (let i = 0; i < nTri; i++) {
-    triangles.push([vi[i * 3], vi[i * 3 + 1], vi[i * 3 + 2]]);
-  }
-  function shareEdge(t0, t1) {
-    const e0 = new Set([edgeKey(t0[0], t0[1]), edgeKey(t0[1], t0[2]), edgeKey(t0[2], t0[0])]);
-    for (let k = 0; k < 3; k++) {
-      if (e0.has(edgeKey(t1[k], t1[(k + 1) % 3]))) return true;
-    }
-    return false;
-  }
-  const used = new Array(nTri).fill(false);
-  const components = [];
-  for (let i = 0; i < nTri; i++) {
-    if (used[i]) continue;
-    const comp = [];
-    const stack = [i];
-    used[i] = true;
-    while (stack.length > 0) {
-      const idx = stack.pop();
-      comp.push(triangles[idx]);
-      for (let j = 0; j < nTri; j++) {
-        if (used[j]) continue;
-        if (shareEdge(triangles[idx], triangles[j])) {
-          used[j] = true;
-          stack.push(j);
-        }
-      }
-    }
-    components.push(comp);
-  }
-  return components;
 }
 
 function sampleField(gridX, gridY, gridZ, resolution, fieldFn) {
@@ -79,39 +41,44 @@ function interpolate(position0, position1, value0, value1, isovalue) {
 }
 
 /**
- * IsoEx-style: one position and one normal per polygon vertex. Same data for detection and SVD.
+ * Feature detection per Kobbelt et al. "Feature Sensitive Surface Extraction from Volume Data".
+ * θ = min_{i,j}(n_i·n_j); sharp feature when θ < cos(featureAngleRad).
+ * n* = (n0×n1) normalized; φ = max_i |n_i·n*|; corner when φ > sin(cornerAngleRad), else edge.
+ * Angles in radians (defaults: featureAngleRad=0.9, cornerAngleRad=0.7).
  */
-function findFeaturePoint(positionsCentered, normals, featureAngleRad, counts) {
+function findFeaturePoint(positionsCentered, normals, featureAngleRad, cornerAngleRad, counts) {
   const vertexCount = positionsCentered.length;
-  let minimumCosine = 1;
-  let axis = [0, 0, 0];
+  let theta = 1;
+  let n0 = [0, 0, 0];
+  let n1 = [0, 0, 0];
   for (let i = 0; i < vertexCount; i++) {
     for (let j = 0; j < vertexCount; j++) {
-      const normalDotProduct = normals[i][0] * normals[j][0] + normals[i][1] * normals[j][1] + normals[i][2] * normals[j][2];
-      if (normalDotProduct < minimumCosine) {
-        minimumCosine = normalDotProduct;
-        axis = [
-          normals[i][1] * normals[j][2] - normals[i][2] * normals[j][1],
-          normals[i][2] * normals[j][0] - normals[i][0] * normals[j][2],
-          normals[i][0] * normals[j][1] - normals[i][1] * normals[j][0]
-        ];
+      const dot = normals[i][0] * normals[j][0] + normals[i][1] * normals[j][1] + normals[i][2] * normals[j][2];
+      if (dot < theta) {
+        theta = dot;
+        n0 = normals[i].slice(0, 3);
+        n1 = normals[j].slice(0, 3);
       }
     }
   }
-  if (minimumCosine > Math.cos(featureAngleRad)) return null;
+  const cosSharp = Math.cos(featureAngleRad);
+  if (theta > cosSharp) return null;
 
-  let axisLength = Math.sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]) || 1;
-  axis[0] /= axisLength; axis[1] /= axisLength; axis[2] /= axisLength;
-  let minimumAxisDot = 1;
-  let maximumAxisDot = -1;
+  const nStar = [
+    n0[1] * n1[2] - n0[2] * n1[1],
+    n0[2] * n1[0] - n0[0] * n1[2],
+    n0[0] * n1[1] - n0[1] * n1[0]
+  ];
+  const nStarLen = Math.sqrt(nStar[0] * nStar[0] + nStar[1] * nStar[1] + nStar[2] * nStar[2]) || 1;
+  nStar[0] /= nStarLen; nStar[1] /= nStarLen; nStar[2] /= nStarLen;
+
+  let phi = 0;
   for (let i = 0; i < vertexCount; i++) {
-    const axisDotProduct = normals[i][0] * axis[0] + normals[i][1] * axis[1] + normals[i][2] * axis[2];
-    if (axisDotProduct < minimumAxisDot) minimumAxisDot = axisDotProduct;
-    if (axisDotProduct > maximumAxisDot) maximumAxisDot = axisDotProduct;
+    const d = Math.abs(normals[i][0] * nStar[0] + normals[i][1] * nStar[1] + normals[i][2] * nStar[2]);
+    if (d > phi) phi = d;
   }
-  let spreadCosine = Math.max(Math.abs(minimumAxisDot), Math.abs(maximumAxisDot));
-  spreadCosine = Math.sqrt(1 - spreadCosine * spreadCosine);
-  const rank = spreadCosine > Math.cos(featureAngleRad) ? 2 : 3;
+  const cornerThreshold = Math.sin(cornerAngleRad);
+  const rank = phi > cornerThreshold ? 3 : 2;
   if (rank === 2) counts.n_edges++;
   else counts.n_corners++;
 
@@ -244,12 +211,12 @@ function flipEdges(vertices, indices, featureVertices) {
  * @param {number} resolution
  * @param {number} isovalue
  * @param {(x:number,y:number,z:number)=>number} fieldFn
- * @param {{ featureAngleDeg?: number, flipEdges?: boolean, noFeatures?: boolean }} options - flipEdges (default true) toggles post-process edge flip; noFeatures=true disables sharp features
+ * @param {{ featureAngleRad?: number, cornerAngleRad?: number, flipEdges?: boolean, noFeatures?: boolean }} options - featureAngleRad/cornerAngleRad in radians (defaults 0.9, 0.7); flipEdges (default true); noFeatures=true disables sharp features
  * @returns {{ vertices:number[], indices:number[] }}
  */
 export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {}) {
-  const featureAngleDeg = options.featureAngleDeg ?? 30;
-  const featureAngleRad = (featureAngleDeg * Math.PI) / 180;
+  const featureAngleRad = options.featureAngleRad ?? 0.9;
+  const cornerAngleRad = options.cornerAngleRad ?? 0.7;
   const noFeatures = options.noFeatures === true;
 
   const vertices = [];
@@ -329,28 +296,10 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
         const vertexArray = regularVertexData[caseIndex];
         const tableRow = regularCellPolyTable[caseIndex];
         const componentCount = tableRow[0];
-        const equivClass = regularCellClass[caseIndex];
-        const cellData = regularCellData[equivClass];
-        const c4Components = partitionC4Triangles(cellData);
 
-        // Build per-case sample vertex indices: max over polygon table and C4 triangle indices.
+        // 12 vertex slots per cell (like MC extended 12 edges); table indices reference these.
         const samples = new Array(12);
-        let maximumVertexIndex = 0;
-        let scanOffset = 1;
-        for (let componentIndex = 0; componentIndex < componentCount; componentIndex++) {
-          const vertexCountInComponent = tableRow[scanOffset++];
-          for (let vertexSlot = 0; vertexSlot < vertexCountInComponent; vertexSlot++) {
-            const tableVertexIndex = tableRow[scanOffset + vertexSlot];
-            if (tableVertexIndex > maximumVertexIndex) maximumVertexIndex = tableVertexIndex;
-          }
-          scanOffset += vertexCountInComponent;
-        }
-        const nTri = cellData.geometryCounts & 0x0f;
-        const vi = cellData.vertexIndex;
-        for (let i = 0; i < nTri * 3; i++) {
-          if (vi[i] > maximumVertexIndex) maximumVertexIndex = vi[i];
-        }
-        for (let sampleSlot = 0; sampleSlot <= maximumVertexIndex; sampleSlot++) {
+        for (let sampleSlot = 0; sampleSlot < 12; sampleSlot++) {
           const vertexCode = vertexArray[sampleSlot];
           samples[sampleSlot] = getVertex(cellX, cellY, cellZ, vertexCode, cornerValues);
         }
@@ -359,10 +308,10 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
         for (let componentIndex = 0; componentIndex < componentCount; componentIndex++) {
           const vertexCountInPolygon = tableRow[tableOffset++];
           const polygonVertexIndices = [];
-          for (let vertexSlot = 0; vertexSlot < vertexCountInPolygon; vertexSlot++) polygonVertexIndices.push(samples[tableRow[tableOffset + vertexSlot]]);
+          for (let vertexSlot = 0; vertexSlot < vertexCountInPolygon; vertexSlot++) {
+            polygonVertexIndices.push(samples[tableRow[tableOffset + vertexSlot]]);
+          }
           tableOffset += vertexCountInPolygon;
-
-          if (vertexCountInPolygon < 3 || vertexCountInPolygon > 7) continue;
 
           const centerOfGravity = [0, 0, 0];
           for (let vertexSlot = 0; vertexSlot < vertexCountInPolygon; vertexSlot++) {
@@ -379,7 +328,7 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
             normals.push(getNormal(polygonVertexIndices[vertexSlot]));
           }
 
-          const featureResult = noFeatures ? null : findFeaturePoint(positionsCentered, normals, featureAngleRad, counts);
+          const featureResult = noFeatures ? null : findFeaturePoint(positionsCentered, normals, featureAngleRad, cornerAngleRad, counts);
           if (featureResult) {
             const worldPosition = [
               featureResult.point[0] + centerOfGravity[0],
@@ -397,13 +346,14 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
               indices.push(polygonVertexIndices[vertexSlot], polygonVertexIndices[(vertexSlot + 1) % vertexCountInPolygon], featureVertexIndex);
             }
           } else {
-            // Use C4 triangulation for this component (matches official Transvoxel tables; fan would be wrong for non-fan cells).
-            const tris = c4Components[componentIndex];
-            if (tris) {
-              for (let t = 0; t < tris.length; t++) {
-                const [a, b, c] = tris[t];
-                indices.push(samples[a], samples[b], samples[c]);
-              }
+            // Same as MC extended: fan triangulation from polyTable (same polygon used for feature path).
+            const triangulationTemplate = polyTable[vertexCountInPolygon];
+            for (let triSlot = 0; triangulationTemplate[triSlot] !== -1; triSlot += 3) {
+              indices.push(
+                polygonVertexIndices[triangulationTemplate[triSlot]],
+                polygonVertexIndices[triangulationTemplate[triSlot + 1]],
+                polygonVertexIndices[triangulationTemplate[triSlot + 2]]
+              );
             }
           }
         }
