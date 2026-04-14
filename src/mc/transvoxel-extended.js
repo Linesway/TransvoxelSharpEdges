@@ -163,8 +163,28 @@ Triangle 1: (B, D, C)
       D (oppositeVertex1)
 
  */
-function flipEdges(vertices, indices, featureVertices) {
+function flipEdges(vertices, indices, featureVertices, featureLocalFanTriangles, triangleFeatureOwners) {
   const makeEdgeKey = (vertexA, vertexB) => (vertexA < vertexB ? `${vertexA},${vertexB}` : `${vertexB},${vertexA}`);
+  const ensureFanSet = (featureVertex) => {
+    if (!featureLocalFanTriangles.has(featureVertex)) featureLocalFanTriangles.set(featureVertex, new Set());
+    return featureLocalFanTriangles.get(featureVertex);
+  };
+  const reassignTriangleOwners = (triangleIndex, owners) => {
+    const oldOwners = triangleFeatureOwners.get(triangleIndex);
+    if (oldOwners) {
+      for (const owner of oldOwners) {
+        const fan = featureLocalFanTriangles.get(owner);
+        if (fan) fan.delete(triangleIndex);
+      }
+    }
+    const nextOwners = new Set();
+    for (const owner of owners) {
+      if (!featureVertices.has(owner)) continue;
+      nextOwners.add(owner);
+    }
+    triangleFeatureOwners.set(triangleIndex, nextOwners);
+    for (const owner of nextOwners) ensureFanSet(owner).add(triangleIndex);
+  };
 
   // Build a map: edge key -> list of triangles that use that edge (each with triangleOffset, edge vertices, opposite vertex)
   //an edge key is (smallerAbsoluteVertexIndex, largerAbsoluteVertexIndex)
@@ -204,6 +224,11 @@ function flipEdges(vertices, indices, featureVertices) {
     const triangleIndex0 = triangle0.triangleOffset, triangleIndex1 = triangle1.triangleOffset;
     indices[triangleIndex0] = edgeVertexA; indices[triangleIndex0 + 1] = oppositeVertex0; indices[triangleIndex0 + 2] = oppositeVertex1;
     indices[triangleIndex1] = edgeVertexB; indices[triangleIndex1 + 1] = oppositeVertex1; indices[triangleIndex1 + 2] = oppositeVertex0;
+    const triId0 = triangleIndex0 / 3;
+    const triId1 = triangleIndex1 / 3;
+    // Keep local-fan ownership in sync with final (post-flip) feature vertices.
+    reassignTriangleOwners(triId0, [oppositeVertex0, oppositeVertex1]);
+    reassignTriangleOwners(triId1, [oppositeVertex0, oppositeVertex1]);
     flipCount++;
   }
   if (flipCount > 0) console.log('Transvoxel Extended: edge flips =', flipCount);
@@ -215,7 +240,7 @@ function flipEdges(vertices, indices, featureVertices) {
  * @param {number} isovalue
  * @param {(x:number,y:number,z:number)=>number} fieldFn
  * @param {{ featureAngleRad?: number, featureAngleDeg?: number, cornerAngleRad?: number, flipEdges?: boolean, noFeatures?: boolean }} options - featureAngleDeg (degrees, default 30) or featureAngleRad; cornerAngleRad in radians (default 0.7); flipEdges (default true); noFeatures=true disables sharp features
- * @returns {{ vertices:number[], indices:number[] }}
+ * @returns {{ vertices:number[], indices:number[], featureVertices:Set<number>, featureLocalFanTriangles:Map<number, number[]> }}
  */
 export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {}) {
   const featureAngleRad = options.featureAngleDeg != null
@@ -227,8 +252,9 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
   const vertices = [];
   const indices = [];
   const vertexMap = new Map();
-  const vertexLimitNormals = [];
   const featureVertices = new Set();
+  const featureLocalFanTriangles = new Map(); // feature vertex -> set of local/final fan triangle indices
+  const triangleFeatureOwners = new Map(); // triangle index -> set of feature vertices currently in that triangle
   const counts = { n_edges: 0, n_corners: 0 };
   let nextVertexIndex = 0;
 
@@ -257,19 +283,9 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
     const normalX = -gradientX / gradientLength, normalY = -gradientY / gradientLength, normalZ = -gradientZ / gradientLength;
 
     // Limit normals at edge corners for feature detection.
-    const [gradient0X, gradient0Y, gradient0Z] = gradientAt(cornerPosition0[0], cornerPosition0[1], cornerPosition0[2], fieldFn);
-    const [gradient1X, gradient1Y, gradient1Z] = gradientAt(cornerPosition1[0], cornerPosition1[1], cornerPosition1[2], fieldFn);
-    const gradientLength0 = Math.sqrt(gradient0X * gradient0X + gradient0Y * gradient0Y + gradient0Z * gradient0Z) || 1;
-    const gradientLength1 = Math.sqrt(gradient1X * gradient1X + gradient1Y * gradient1Y + gradient1Z * gradient1Z) || 1;
-    const limitNormal0 = [-gradient0X / gradientLength0, -gradient0Y / gradientLength0, -gradient0Z / gradientLength0];
-    const limitNormal1 = [-gradient1X / gradientLength1, -gradient1Y / gradientLength1, -gradient1Z / gradientLength1];
-    const cornerNormalDotProduct = limitNormal0[0] * limitNormal1[0] + limitNormal0[1] * limitNormal1[1] + limitNormal0[2] * limitNormal1[2];
-
     const newVertexIndex = nextVertexIndex++;
     vertexMap.set(edgeKeyValue, newVertexIndex);
     vertices.push(position[0], position[1], position[2], normalX, normalY, normalZ);
-    if (cornerNormalDotProduct < Math.cos(featureAngleRad)) vertexLimitNormals[newVertexIndex] = [limitNormal0, limitNormal1];
-    else vertexLimitNormals[newVertexIndex] = undefined;
     return newVertexIndex;
   }
 
@@ -368,8 +384,13 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
             const averageNormalLength = Math.sqrt(averageNormalX * averageNormalX + averageNormalY * averageNormalY + averageNormalZ * averageNormalZ) || 1;
             averageNormalX /= averageNormalLength; averageNormalY /= averageNormalLength; averageNormalZ /= averageNormalLength;
             const featureVertexIndex = addFeatureVertex(worldPosition, [averageNormalX, averageNormalY, averageNormalZ]);
+            const localFanTriangles = new Set();
+            featureLocalFanTriangles.set(featureVertexIndex, localFanTriangles);
             for (let vertexSlot = 0; vertexSlot < vertexCountInPolygon; vertexSlot++) {
+              const triIndex = indices.length / 3;
               indices.push(polygonVertexIndices[vertexSlot], polygonVertexIndices[(vertexSlot + 1) % vertexCountInPolygon], featureVertexIndex);
+              localFanTriangles.add(triIndex);
+              triangleFeatureOwners.set(triIndex, new Set([featureVertexIndex]));
             }
           } else {
             // No feature or rejected (e.g. at origin): fan triangulation from polyTable
@@ -388,7 +409,11 @@ export function runTransvoxelExtended(resolution, isovalue, fieldFn, options = {
   }
 
   const flipEdgesOption = options.flipEdges === true; // only flip when explicitly true
-  if (flipEdgesOption) flipEdges(vertices, indices, featureVertices);
+  if (flipEdgesOption) flipEdges(vertices, indices, featureVertices, featureLocalFanTriangles, triangleFeatureOwners);
   console.log('Transvoxel Extended: found', counts.n_edges, 'edge features,', counts.n_corners, 'corner features');
-  return { vertices, indices, featureVertices };
+  const featureLocalFanTrianglesOut = new Map();
+  for (const [featureVertex, triSet] of featureLocalFanTriangles) {
+    featureLocalFanTrianglesOut.set(featureVertex, Array.from(triSet));
+  }
+  return { vertices, indices, featureVertices, featureLocalFanTriangles: featureLocalFanTrianglesOut };
 }

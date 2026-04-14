@@ -46,9 +46,10 @@ function unionFind(n) {
  * @param {number[]} indices - triangle indices
  * @param {number} smoothAngleDeg - angle in degrees; faces within this share a vertex (smooth), else duplicate (sharp)
  * @param {Set<number>} featureVertexSet - vertex indices that are feature vertices (from extractor); only these are duplicated
+ * @param {Map<number, number[]>} featureLocalFanTriangles - per feature vertex, triangle indices to consider for grouping
  * @returns {{ vertices: number[], indices: number[] }}
  */
-function applySharpNormals(vertices, indices, smoothAngleDeg, featureVertexSet) {
+function applySharpNormals(vertices, indices, smoothAngleDeg, featureVertexSet, featureLocalFanTriangles) {
   const smoothAngleRad = (smoothAngleDeg * Math.PI) / 180;
   const cosSmooth = Math.cos(smoothAngleRad);
   const numTris = indices.length / 3;
@@ -70,15 +71,20 @@ function applySharpNormals(vertices, indices, smoothAngleDeg, featureVertexSet) 
     faceNormals.push([nx, ny, nz]);
   }
 
-  // vertex -> list of { triIndex, corner } only for feature vertices
+  // vertex -> list of { triIndex, corner } only for feature vertices, from local/final fan map
   const vertexToTriangles = new Map();
-  for (let t = 0; t < numTris; t++) {
-    for (let c = 0; c < 3; c++) {
-      const v = indices[3 * t + c];
-      if (!featureVertexSet.has(v)) continue;
-      if (!vertexToTriangles.has(v)) vertexToTriangles.set(v, []);
-      vertexToTriangles.get(v).push({ triIndex: t, corner: c });
+  for (const [v, triList] of featureLocalFanTriangles) {
+    if (!featureVertexSet.has(v) || !Array.isArray(triList) || triList.length === 0) continue;
+    const list = [];
+    for (let i = 0; i < triList.length; i++) {
+      const t = triList[i];
+      if (t < 0 || t >= numTris) continue;
+      const a = indices[3 * t], b = indices[3 * t + 1], c = indices[3 * t + 2];
+      if (a !== v && b !== v && c !== v) continue;
+      const corner = (a === v) ? 0 : ((b === v) ? 1 : 2);
+      list.push({ triIndex: t, corner });
     }
+    if (list.length > 0) vertexToTriangles.set(v, list);
   }
 
   // For each feature vertex: partition its triangles by face normal angle
@@ -127,6 +133,13 @@ function applySharpNormals(vertices, indices, smoothAngleDeg, featureVertexSet) 
     vertexGroupNormals.set(v, groupNormals);
   }
 
+  // Log (numGroups, numIncidentFaces) per feature vertex for comparison
+  const groupsVsFaces = [];
+  for (const [v, list] of vertexToTriangles) {
+    groupsVsFaces.push([vertexNumGroups.get(v), list.length]);
+  }
+  console.log('Sharp normals: feature vertices (groups, incident faces)', groupsVsFaces);
+
   // Prefix sum: new vertex count per old vertex (feature: num groups, non-feature: 1)
   const numOldVertices = vertices.length / 6;
   let totalNew = 0;
@@ -171,13 +184,14 @@ function applySharpNormals(vertices, indices, smoothAngleDeg, featureVertexSet) 
  */
 export function runTransvoxelExtendedSharpNormals(resolution, isovalue, fieldFn, options = {}) {
   const noFeatures = options.noFeatures === true;
-  const { vertices, indices, featureVertices } = runTransvoxelExtended(resolution, isovalue, fieldFn, {
+  const { vertices, indices, featureVertices, featureLocalFanTriangles } = runTransvoxelExtended(resolution, isovalue, fieldFn, {
     flipEdges: options.flipEdges,
     featureAngleDeg: options.featureAngleDeg,
     noFeatures
   });
   if (noFeatures) return { vertices, indices };
   const featureVertexSet = featureVertices ?? new Set();
+  const localFanTriangles = featureLocalFanTriangles ?? new Map();
   const smoothAngleDeg = options.featureAngleDeg ?? 30;
-  return applySharpNormals(vertices, indices, smoothAngleDeg, featureVertexSet);
+  return applySharpNormals(vertices, indices, smoothAngleDeg, featureVertexSet, localFanTriangles);
 }

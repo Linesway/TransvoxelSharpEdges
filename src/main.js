@@ -4,7 +4,7 @@
  */
 import * as pc from 'playcanvas';
 import * as sdf from './noise/sdf.js';
-const { insidePositive, cubeSDF, sphereSDF, createPerlin2DSDF, createPerlin2DUnionCubeSDF, createPerlin3DField, createGridOfCubesSDF } = sdf;
+const { insidePositive, createCubeSDF, sphereSDF, createPerlin2DSDF, createPerlin2DUnionCubeSDF, createPerlin3DField, createGridOfCubesSDF, createWorldHeightmap2DFieldFactory } = sdf;
 import { runMarchingCubes } from './mc/marching-cubes.js';
 import { runExtendedMarchingCubes } from './mc/marching-cubes-extended.js';
 import { runExtendedMarchingCubesHalfedge } from './mc/marching-cubes-extended-halfedge.js';
@@ -119,12 +119,17 @@ app.root.addChild(fillLight);
   document.body.appendChild(panel);
 })();
 
-// World 1: Compare (7 algorithms, single chunk). World 2: TVx only, grid of chunks, 3D Perlin.
-const currentWorld = { value: 1 }; // 1 = Compare, 2 = TVx Terrain, 3 = Grid of cubes
+// World 1: Compare (7 algorithms, single chunk). World 2: TVx grid of chunks, 3D Perlin.
+// World 3: grid of cubes. World 4: LOD octree terrain (2D Perlin heightmap, LOD 0..2, TVx sharp normals).
+const currentWorld = { value: 1 }; // 1 = Compare, 2 = TVx Terrain, 3 = Grid of cubes, 4 = LOD Terrain
 const world1State = {
   resolution: 24,
   iso: 0,
   sdfChoice: 1,  // 1: Cube, 2: Sphere, 3: Perlin 2D, 4: Perlin 2D union cube
+  cubeHalfSize: 0.4,
+  cubeOffsetX: 0,
+  cubeOffsetY: 0,
+  cubeOffsetZ: 0,
   chunkScale: 1,
   perlinBase: 0.25,
   perlinAmplitude: 0.4,
@@ -153,10 +158,32 @@ const world3State = {
   gridNx: 3,
   gridNy: 3,
   gridNz: 3,
+  cubeFill: 0.8,
+  cubeOffsetX: 0,
+  cubeOffsetY: 0,
+  cubeOffsetZ: 0,
   flipEdges: true,
   featureAngleDeg: 30,
   noFeatures: false,
   algorithm: 'transvoxelExtended'
+};
+// World 4: octree LOD terrain. Root is a cube of side mapSize centered at (0, 0, 0),
+// subdivided by distance from focus point. maxDepth = 2 → LOD 0 (finest) to LOD 2 (coarsest).
+// Every chunk uses runTransvoxelExtendedSharpNormals. No LOD stitching — gaps are visible.
+const world4State = {
+  resolution: 16,
+  mapSize: 64,
+  rootsPerSide: 4,        // grid of root (LOD 2) cells across the map, each with its own octree
+  maxDepth: 2,            // 0 = root only (LOD 2), up to 2 = leaf at LOD 0
+  splitRadius0: 20,       // split root (LOD 2) if center dist < this → children at LOD 1
+  splitRadius1: 10,       // split LOD 1 cell if center dist < this → children at LOD 0
+  perlinFrequency: 0.05,
+  perlinAmplitude: 6,
+  perlinBaseY: 0,
+  featureAngleDeg: 30,
+  flipEdges: true,
+  noFeatures: false,
+  colorByLod: true
 };
 const chunkState = {
   mcEntity: null,
@@ -169,12 +196,21 @@ const chunkState = {
   tvxChunkEntities: [], // World 2: one entity per chunk
   cubesRoot: null,       // World 3: root for grid-of-cubes mesh
   cubesMeshEntity: null,
+  terrainLodRoot: null,  // World 4: root for LOD terrain
+  lodChunkEntities: [],  // World 4: one entity per leaf chunk
+  lodMaterials: null,    // World 4: [LOD0, LOD1, LOD2] materials
   materials: null
 };
 
 function getFieldFn() {
+  const cubeParams = {
+    halfSize: world1State.cubeHalfSize,
+    offsetX: world1State.cubeOffsetX,
+    offsetY: world1State.cubeOffsetY,
+    offsetZ: world1State.cubeOffsetZ
+  };
   const choice = world1State.sdfChoice;
-  if (choice === 1) return insidePositive(cubeSDF);
+  if (choice === 1) return insidePositive(createCubeSDF(cubeParams));
   if (choice === 2) return insidePositive(sphereSDF);
   if (choice === 3) return insidePositive(createPerlin2DSDF({
     base: world1State.perlinBase,
@@ -184,9 +220,10 @@ function getFieldFn() {
   if (choice === 4) return insidePositive(createPerlin2DUnionCubeSDF({
     base: world1State.perlinBase,
     amplitude: world1State.perlinAmplitude,
-    frequency: world1State.perlinFrequency
+    frequency: world1State.perlinFrequency,
+    ...cubeParams
   }));
-  return insidePositive(cubeSDF);
+  return insidePositive(createCubeSDF(cubeParams));
 }
 
 /** Even x positions for the 7 mesh entities. Spacing scales with chunkScale so cubes don't overlap when size is large. */
@@ -205,9 +242,11 @@ function setWorldVisibility() {
   const compareRoot = chunkState.compareRoot;
   const terrainRoot = chunkState.terrainRoot;
   const cubesRoot = chunkState.cubesRoot;
+  const terrainLodRoot = chunkState.terrainLodRoot;
   if (compareRoot) compareRoot.enabled = (w === 1);
   if (terrainRoot) terrainRoot.enabled = (w === 2);
   if (cubesRoot) cubesRoot.enabled = (w === 3);
+  if (terrainLodRoot) terrainLodRoot.enabled = (w === 4);
 }
 
 (function () {
@@ -221,10 +260,11 @@ function setWorldVisibility() {
   worldRow.appendChild(document.createTextNode('World: '));
   const worldSelect = document.createElement('select');
   worldSelect.style.cssText = 'font-size:12px;background:#333;color:#eee;border:1px solid #666;border-radius:4px;padding:4px 8px;margin-left:6px;cursor:pointer;min-width:200px;';
-  worldSelect.title = 'Switch between Compare, TVx Terrain, and Grid of cubes';
+  worldSelect.title = 'Switch between Compare, TVx Terrain, Grid of cubes, and LOD Terrain';
   const opt1 = document.createElement('option'); opt1.value = '1'; opt1.textContent = '1: Compare (6 algorithms)'; worldSelect.appendChild(opt1);
   const opt2 = document.createElement('option'); opt2.value = '2'; opt2.textContent = '2: TVx Terrain (chunk grid)'; worldSelect.appendChild(opt2);
   const opt3 = document.createElement('option'); opt3.value = '3'; opt3.textContent = '3: Grid of cubes'; worldSelect.appendChild(opt3);
+  const opt4 = document.createElement('option'); opt4.value = '4'; opt4.textContent = '4: LOD Terrain (octree 0..2)'; worldSelect.appendChild(opt4);
   worldRow.appendChild(worldSelect);
   const worldBtns = document.createElement('span');
   worldBtns.style.marginLeft = '8px';
@@ -237,14 +277,19 @@ function setWorldVisibility() {
   const btnCubes = document.createElement('button');
   btnCubes.textContent = 'Grid of cubes';
   btnCubes.style.cssText = 'font-size:11px;padding:2px 6px;cursor:pointer;background:#444;color:#eee;border:1px solid #666;border-radius:4px;margin-left:2px;';
+  const btnLodTerrain = document.createElement('button');
+  btnLodTerrain.textContent = 'LOD Terrain';
+  btnLodTerrain.style.cssText = 'font-size:11px;padding:2px 6px;cursor:pointer;background:#444;color:#eee;border:1px solid #666;border-radius:4px;margin-left:2px;';
   worldBtns.appendChild(btnCompare);
   worldBtns.appendChild(btnTerrain);
   worldBtns.appendChild(btnCubes);
+  worldBtns.appendChild(btnLodTerrain);
   worldRow.appendChild(worldBtns);
   panel.appendChild(worldRow);
   btnCompare.addEventListener('click', () => { worldSelect.value = '1'; showSectionForWorld(); });
   btnTerrain.addEventListener('click', () => { worldSelect.value = '2'; showSectionForWorld(); });
   btnCubes.addEventListener('click', () => { worldSelect.value = '3'; showSectionForWorld(); });
+  btnLodTerrain.addEventListener('click', () => { worldSelect.value = '4'; showSectionForWorld(); });
 
   // ---- World 1 section ----
   const world1Section = document.createElement('div');
@@ -259,8 +304,8 @@ function setWorldVisibility() {
   resLabel.appendChild(resValueSpan);
   const resInput = document.createElement('input');
   resInput.type = 'range';
-  resInput.min = '6';
-  resInput.max = '48';
+  resInput.min = '2';
+  resInput.max = '128';
   resInput.value = String(world1State.resolution);
   resInput.style.width = '140px';
   resInput.style.display = 'block';
@@ -306,6 +351,70 @@ function setWorldVisibility() {
   scaleInput.value = String(world1State.chunkScale);
   scaleInput.style.width = '140px';
   scaleInput.style.display = 'block';
+
+  const cubeSizeLabel = document.createElement('label');
+  cubeSizeLabel.style.display = 'block';
+  cubeSizeLabel.style.marginTop = '8px';
+  const cubeSizeSpan = document.createElement('span');
+  cubeSizeSpan.textContent = world1State.cubeHalfSize.toFixed(2);
+  cubeSizeLabel.appendChild(document.createTextNode('Cube half-size '));
+  cubeSizeLabel.appendChild(cubeSizeSpan);
+  const cubeSizeInput = document.createElement('input');
+  cubeSizeInput.type = 'range';
+  cubeSizeInput.min = '0.01';
+  cubeSizeInput.max = '0.49';
+  cubeSizeInput.step = '0.01';
+  cubeSizeInput.value = String(world1State.cubeHalfSize);
+  cubeSizeInput.style.width = '140px';
+  cubeSizeInput.style.display = 'block';
+
+  const cubeOffsetXLabel = document.createElement('label');
+  cubeOffsetXLabel.style.display = 'block';
+  cubeOffsetXLabel.style.marginTop = '4px';
+  const cubeOffsetXSpan = document.createElement('span');
+  cubeOffsetXSpan.textContent = world1State.cubeOffsetX.toFixed(2);
+  cubeOffsetXLabel.appendChild(document.createTextNode('Cube offset X '));
+  cubeOffsetXLabel.appendChild(cubeOffsetXSpan);
+  const cubeOffsetXInput = document.createElement('input');
+  cubeOffsetXInput.type = 'range';
+  cubeOffsetXInput.min = '-0.49';
+  cubeOffsetXInput.max = '0.49';
+  cubeOffsetXInput.step = '0.01';
+  cubeOffsetXInput.value = String(world1State.cubeOffsetX);
+  cubeOffsetXInput.style.width = '140px';
+  cubeOffsetXInput.style.display = 'block';
+
+  const cubeOffsetYLabel = document.createElement('label');
+  cubeOffsetYLabel.style.display = 'block';
+  cubeOffsetYLabel.style.marginTop = '4px';
+  const cubeOffsetYSpan = document.createElement('span');
+  cubeOffsetYSpan.textContent = world1State.cubeOffsetY.toFixed(2);
+  cubeOffsetYLabel.appendChild(document.createTextNode('Cube offset Y '));
+  cubeOffsetYLabel.appendChild(cubeOffsetYSpan);
+  const cubeOffsetYInput = document.createElement('input');
+  cubeOffsetYInput.type = 'range';
+  cubeOffsetYInput.min = '-0.49';
+  cubeOffsetYInput.max = '0.49';
+  cubeOffsetYInput.step = '0.01';
+  cubeOffsetYInput.value = String(world1State.cubeOffsetY);
+  cubeOffsetYInput.style.width = '140px';
+  cubeOffsetYInput.style.display = 'block';
+
+  const cubeOffsetZLabel = document.createElement('label');
+  cubeOffsetZLabel.style.display = 'block';
+  cubeOffsetZLabel.style.marginTop = '4px';
+  const cubeOffsetZSpan = document.createElement('span');
+  cubeOffsetZSpan.textContent = world1State.cubeOffsetZ.toFixed(2);
+  cubeOffsetZLabel.appendChild(document.createTextNode('Cube offset Z '));
+  cubeOffsetZLabel.appendChild(cubeOffsetZSpan);
+  const cubeOffsetZInput = document.createElement('input');
+  cubeOffsetZInput.type = 'range';
+  cubeOffsetZInput.min = '-0.49';
+  cubeOffsetZInput.max = '0.49';
+  cubeOffsetZInput.step = '0.01';
+  cubeOffsetZInput.value = String(world1State.cubeOffsetZ);
+  cubeOffsetZInput.style.width = '140px';
+  cubeOffsetZInput.style.display = 'block';
 
   const perlinSection = document.createElement('div');
   perlinSection.style.marginTop = '8px';
@@ -410,6 +519,14 @@ function setWorldVisibility() {
   world1Section.appendChild(sdfSelect);
   world1Section.appendChild(scaleLabel);
   world1Section.appendChild(scaleInput);
+  world1Section.appendChild(cubeSizeLabel);
+  world1Section.appendChild(cubeSizeInput);
+  world1Section.appendChild(cubeOffsetXLabel);
+  world1Section.appendChild(cubeOffsetXInput);
+  world1Section.appendChild(cubeOffsetYLabel);
+  world1Section.appendChild(cubeOffsetYInput);
+  world1Section.appendChild(cubeOffsetZLabel);
+  world1Section.appendChild(cubeOffsetZInput);
   world1Section.appendChild(perlinSection);
   world1Section.appendChild(featureAngleLabelW1);
   world1Section.appendChild(featureAngleInputW1);
@@ -419,6 +536,15 @@ function setWorldVisibility() {
   function updatePerlinSectionVisibility() {
     const choice = parseInt(sdfSelect.value, 10);
     perlinSection.style.display = (choice === 3 || choice === 4) ? 'block' : 'none';
+    const showCubeSize = (choice === 1 || choice === 4);
+    cubeSizeLabel.style.display = showCubeSize ? 'block' : 'none';
+    cubeSizeInput.style.display = showCubeSize ? 'block' : 'none';
+    cubeOffsetXLabel.style.display = showCubeSize ? 'block' : 'none';
+    cubeOffsetXInput.style.display = showCubeSize ? 'block' : 'none';
+    cubeOffsetYLabel.style.display = showCubeSize ? 'block' : 'none';
+    cubeOffsetYInput.style.display = showCubeSize ? 'block' : 'none';
+    cubeOffsetZLabel.style.display = showCubeSize ? 'block' : 'none';
+    cubeOffsetZInput.style.display = showCubeSize ? 'block' : 'none';
   }
   sdfSelect.addEventListener('change', updatePerlinSectionVisibility);
   updatePerlinSectionVisibility(); // Cube/Sphere = hide Perlin; Perlin 2D / union = show
@@ -437,8 +563,8 @@ function setWorldVisibility() {
   w2ResLabel.appendChild(w2ResSpan);
   const w2ResInput = document.createElement('input');
   w2ResInput.type = 'range';
-  w2ResInput.min = '6';
-  w2ResInput.max = '40';
+  w2ResInput.min = '2';
+  w2ResInput.max = '128';
   w2ResInput.value = String(world2State.resolution);
   w2ResInput.style.width = '140px';
   w2ResInput.style.display = 'block';
@@ -614,6 +740,10 @@ function setWorldVisibility() {
   resInput.addEventListener('input', () => { resValueSpan.textContent = resInput.value; });
   isoInput.addEventListener('input', () => { isoValueSpan.textContent = Number(isoInput.value).toFixed(2); });
   scaleInput.addEventListener('input', () => { scaleValueSpan.textContent = Number(scaleInput.value).toFixed(1); });
+  cubeSizeInput.addEventListener('input', () => { cubeSizeSpan.textContent = Number(cubeSizeInput.value).toFixed(2); });
+  cubeOffsetXInput.addEventListener('input', () => { cubeOffsetXSpan.textContent = Number(cubeOffsetXInput.value).toFixed(2); });
+  cubeOffsetYInput.addEventListener('input', () => { cubeOffsetYSpan.textContent = Number(cubeOffsetYInput.value).toFixed(2); });
+  cubeOffsetZInput.addEventListener('input', () => { cubeOffsetZSpan.textContent = Number(cubeOffsetZInput.value).toFixed(2); });
   perlinBaseInput.addEventListener('input', () => { perlinBaseSpan.textContent = Number(perlinBaseInput.value).toFixed(2); });
   perlinAmpInput.addEventListener('input', () => { perlinAmpSpan.textContent = Number(perlinAmpInput.value).toFixed(2); });
   perlinFreqInput.addEventListener('input', () => { perlinFreqSpan.textContent = Number(perlinFreqInput.value).toFixed(1); });
@@ -640,8 +770,8 @@ function setWorldVisibility() {
   w3ResLabel.appendChild(w3ResSpan);
   const w3ResInput = document.createElement('input');
   w3ResInput.type = 'range';
-  w3ResInput.min = '12';
-  w3ResInput.max = '48';
+  w3ResInput.min = '2';
+  w3ResInput.max = '128';
   w3ResInput.value = String(world3State.resolution);
   w3ResInput.style.width = '140px';
   w3ResInput.style.display = 'block';
@@ -722,6 +852,70 @@ function setWorldVisibility() {
   w3NzInput.style.width = '140px';
   w3NzInput.style.display = 'block';
 
+  const w3CubeSizeLabel = document.createElement('label');
+  w3CubeSizeLabel.style.display = 'block';
+  w3CubeSizeLabel.style.marginTop = '6px';
+  const w3CubeSizeSpan = document.createElement('span');
+  w3CubeSizeSpan.textContent = world3State.cubeFill.toFixed(2);
+  w3CubeSizeLabel.appendChild(document.createTextNode('Cube size '));
+  w3CubeSizeLabel.appendChild(w3CubeSizeSpan);
+  const w3CubeSizeInput = document.createElement('input');
+  w3CubeSizeInput.type = 'range';
+  w3CubeSizeInput.min = '0.01';
+  w3CubeSizeInput.max = '0.98';
+  w3CubeSizeInput.step = '0.01';
+  w3CubeSizeInput.value = String(world3State.cubeFill);
+  w3CubeSizeInput.style.width = '140px';
+  w3CubeSizeInput.style.display = 'block';
+
+  const w3CubeOffsetXLabel = document.createElement('label');
+  w3CubeOffsetXLabel.style.display = 'block';
+  w3CubeOffsetXLabel.style.marginTop = '4px';
+  const w3CubeOffsetXSpan = document.createElement('span');
+  w3CubeOffsetXSpan.textContent = world3State.cubeOffsetX.toFixed(2);
+  w3CubeOffsetXLabel.appendChild(document.createTextNode('Cube offset X '));
+  w3CubeOffsetXLabel.appendChild(w3CubeOffsetXSpan);
+  const w3CubeOffsetXInput = document.createElement('input');
+  w3CubeOffsetXInput.type = 'range';
+  w3CubeOffsetXInput.min = '-0.49';
+  w3CubeOffsetXInput.max = '0.49';
+  w3CubeOffsetXInput.step = '0.01';
+  w3CubeOffsetXInput.value = String(world3State.cubeOffsetX);
+  w3CubeOffsetXInput.style.width = '140px';
+  w3CubeOffsetXInput.style.display = 'block';
+
+  const w3CubeOffsetYLabel = document.createElement('label');
+  w3CubeOffsetYLabel.style.display = 'block';
+  w3CubeOffsetYLabel.style.marginTop = '4px';
+  const w3CubeOffsetYSpan = document.createElement('span');
+  w3CubeOffsetYSpan.textContent = world3State.cubeOffsetY.toFixed(2);
+  w3CubeOffsetYLabel.appendChild(document.createTextNode('Cube offset Y '));
+  w3CubeOffsetYLabel.appendChild(w3CubeOffsetYSpan);
+  const w3CubeOffsetYInput = document.createElement('input');
+  w3CubeOffsetYInput.type = 'range';
+  w3CubeOffsetYInput.min = '-0.49';
+  w3CubeOffsetYInput.max = '0.49';
+  w3CubeOffsetYInput.step = '0.01';
+  w3CubeOffsetYInput.value = String(world3State.cubeOffsetY);
+  w3CubeOffsetYInput.style.width = '140px';
+  w3CubeOffsetYInput.style.display = 'block';
+
+  const w3CubeOffsetZLabel = document.createElement('label');
+  w3CubeOffsetZLabel.style.display = 'block';
+  w3CubeOffsetZLabel.style.marginTop = '4px';
+  const w3CubeOffsetZSpan = document.createElement('span');
+  w3CubeOffsetZSpan.textContent = world3State.cubeOffsetZ.toFixed(2);
+  w3CubeOffsetZLabel.appendChild(document.createTextNode('Cube offset Z '));
+  w3CubeOffsetZLabel.appendChild(w3CubeOffsetZSpan);
+  const w3CubeOffsetZInput = document.createElement('input');
+  w3CubeOffsetZInput.type = 'range';
+  w3CubeOffsetZInput.min = '-0.49';
+  w3CubeOffsetZInput.max = '0.49';
+  w3CubeOffsetZInput.step = '0.01';
+  w3CubeOffsetZInput.value = String(world3State.cubeOffsetZ);
+  w3CubeOffsetZInput.style.width = '140px';
+  w3CubeOffsetZInput.style.display = 'block';
+
   const w3AlgoLabel = document.createElement('label');
   w3AlgoLabel.style.display = 'block';
   w3AlgoLabel.style.marginTop = '8px';
@@ -783,6 +977,14 @@ function setWorldVisibility() {
   world3Section.appendChild(w3NyInput);
   world3Section.appendChild(w3NzLabel);
   world3Section.appendChild(w3NzInput);
+  world3Section.appendChild(w3CubeSizeLabel);
+  world3Section.appendChild(w3CubeSizeInput);
+  world3Section.appendChild(w3CubeOffsetXLabel);
+  world3Section.appendChild(w3CubeOffsetXInput);
+  world3Section.appendChild(w3CubeOffsetYLabel);
+  world3Section.appendChild(w3CubeOffsetYInput);
+  world3Section.appendChild(w3CubeOffsetZLabel);
+  world3Section.appendChild(w3CubeOffsetZInput);
   world3Section.appendChild(w3AlgoLabel);
   world3Section.appendChild(w3AlgoSelect);
   world3Section.appendChild(w3FeatureAngleLabel);
@@ -796,7 +998,101 @@ function setWorldVisibility() {
   w3NxInput.addEventListener('input', () => { w3NxSpan.textContent = w3NxInput.value; });
   w3NyInput.addEventListener('input', () => { w3NySpan.textContent = w3NyInput.value; });
   w3NzInput.addEventListener('input', () => { w3NzSpan.textContent = w3NzInput.value; });
+  w3CubeSizeInput.addEventListener('input', () => { w3CubeSizeSpan.textContent = Number(w3CubeSizeInput.value).toFixed(2); });
+  w3CubeOffsetXInput.addEventListener('input', () => { w3CubeOffsetXSpan.textContent = Number(w3CubeOffsetXInput.value).toFixed(2); });
+  w3CubeOffsetYInput.addEventListener('input', () => { w3CubeOffsetYSpan.textContent = Number(w3CubeOffsetYInput.value).toFixed(2); });
+  w3CubeOffsetZInput.addEventListener('input', () => { w3CubeOffsetZSpan.textContent = Number(w3CubeOffsetZInput.value).toFixed(2); });
   w3FeatureAngleInput.addEventListener('input', () => { w3FeatureAngleSpan.textContent = w3FeatureAngleInput.value + '°'; });
+
+  // ---- World 4 section (LOD octree terrain) ----
+  const world4Section = document.createElement('div');
+  world4Section.id = 'world4-section';
+  world4Section.style.display = 'none';
+
+  function makeSlider(labelText, state, key, min, max, step, format) {
+    const label = document.createElement('label');
+    label.style.display = 'block';
+    label.style.marginTop = '8px';
+    const span = document.createElement('span');
+    span.textContent = format(state[key]);
+    label.appendChild(document.createTextNode(labelText + ' '));
+    label.appendChild(span);
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    input.value = String(state[key]);
+    input.style.width = '140px';
+    input.style.display = 'block';
+    input.addEventListener('input', () => { span.textContent = format(Number(input.value)); });
+    return { label, input, span };
+  }
+
+  const w4Res = makeSlider('Resolution (per chunk)', world4State, 'resolution', 4, 48, 1, v => String(v));
+  const w4MapSize = makeSlider('Map size', world4State, 'mapSize', 16, 256, 4, v => String(v));
+  const w4Roots = makeSlider('Root cells / side', world4State, 'rootsPerSide', 1, 8, 1, v => String(v));
+  const w4Amp = makeSlider('Perlin amplitude', world4State, 'perlinAmplitude', 0, 20, 0.5, v => Number(v).toFixed(1));
+  const w4Freq = makeSlider('Perlin frequency', world4State, 'perlinFrequency', 0.005, 0.2, 0.005, v => Number(v).toFixed(3));
+  const w4BaseY = makeSlider('Base Y', world4State, 'perlinBaseY', -10, 10, 0.5, v => Number(v).toFixed(1));
+  const w4R0 = makeSlider('Split radius (L0→L1)', world4State, 'splitRadius0', 0, 128, 1, v => String(v));
+  const w4R1 = makeSlider('Split radius (L1→L2)', world4State, 'splitRadius1', 0, 128, 1, v => String(v));
+  const w4FA = makeSlider('Feature angle', world4State, 'featureAngleDeg', 0, 90, 5, v => v + '°');
+
+  const w4FlipLabel = document.createElement('label');
+  w4FlipLabel.style.display = 'block';
+  w4FlipLabel.style.marginTop = '10px';
+  w4FlipLabel.style.cursor = 'pointer';
+  const w4FlipCheck = document.createElement('input');
+  w4FlipCheck.type = 'checkbox';
+  w4FlipCheck.checked = world4State.flipEdges;
+  w4FlipCheck.style.marginRight = '6px';
+  w4FlipLabel.appendChild(w4FlipCheck);
+  w4FlipLabel.appendChild(document.createTextNode('Triangle flip'));
+
+  const w4NoFeatLabel = document.createElement('label');
+  w4NoFeatLabel.style.display = 'block';
+  w4NoFeatLabel.style.marginTop = '6px';
+  w4NoFeatLabel.style.cursor = 'pointer';
+  const w4NoFeatCheck = document.createElement('input');
+  w4NoFeatCheck.type = 'checkbox';
+  w4NoFeatCheck.checked = world4State.noFeatures;
+  w4NoFeatCheck.style.marginRight = '6px';
+  w4NoFeatLabel.appendChild(w4NoFeatCheck);
+  w4NoFeatLabel.appendChild(document.createTextNode('No features (override)'));
+
+  const w4ColorLabel = document.createElement('label');
+  w4ColorLabel.style.display = 'block';
+  w4ColorLabel.style.marginTop = '6px';
+  w4ColorLabel.style.cursor = 'pointer';
+  const w4ColorCheck = document.createElement('input');
+  w4ColorCheck.type = 'checkbox';
+  w4ColorCheck.checked = world4State.colorByLod;
+  w4ColorCheck.style.marginRight = '6px';
+  w4ColorLabel.appendChild(w4ColorCheck);
+  w4ColorLabel.appendChild(document.createTextNode('Color by LOD'));
+
+  world4Section.appendChild(w4Res.label);
+  world4Section.appendChild(w4Res.input);
+  world4Section.appendChild(w4MapSize.label);
+  world4Section.appendChild(w4MapSize.input);
+  world4Section.appendChild(w4Roots.label);
+  world4Section.appendChild(w4Roots.input);
+  world4Section.appendChild(w4Amp.label);
+  world4Section.appendChild(w4Amp.input);
+  world4Section.appendChild(w4Freq.label);
+  world4Section.appendChild(w4Freq.input);
+  world4Section.appendChild(w4BaseY.label);
+  world4Section.appendChild(w4BaseY.input);
+  world4Section.appendChild(w4R0.label);
+  world4Section.appendChild(w4R0.input);
+  world4Section.appendChild(w4R1.label);
+  world4Section.appendChild(w4R1.input);
+  world4Section.appendChild(w4FA.label);
+  world4Section.appendChild(w4FA.input);
+  world4Section.appendChild(w4FlipLabel);
+  world4Section.appendChild(w4NoFeatLabel);
+  world4Section.appendChild(w4ColorLabel);
 
   function showSectionForWorld() {
     const w = parseInt(worldSelect.value, 10);
@@ -804,6 +1100,7 @@ function setWorldVisibility() {
     world1Section.style.display = (w === 1) ? 'block' : 'none';
     world2Section.style.display = (w === 2) ? 'block' : 'none';
     world3Section.style.display = (w === 3) ? 'block' : 'none';
+    world4Section.style.display = (w === 4) ? 'block' : 'none';
     setWorldVisibility();
   }
   worldSelect.addEventListener('change', showSectionForWorld);
@@ -811,15 +1108,20 @@ function setWorldVisibility() {
   panel.appendChild(world1Section);
   panel.appendChild(world2Section);
   panel.appendChild(world3Section);
+  panel.appendChild(world4Section);
   panel.appendChild(applyBtn);
   document.body.appendChild(panel);
 
   window.rebuildChunkMeshes = function rebuildChunkMeshes() {
     const w = currentWorld.value;
     if (w === 1) {
-      world1State.resolution = Math.max(6, parseInt(resInput.value, 10) || 24);
+      world1State.resolution = Math.max(2, Math.min(128, parseInt(resInput.value, 10) || 24));
       world1State.iso = Number(isoInput.value) || 0;
       world1State.sdfChoice = Math.max(1, Math.min(4, parseInt(sdfSelect.value, 10) || 1));
+      world1State.cubeHalfSize = Math.max(0.01, Math.min(0.49, Number(cubeSizeInput.value) || 0.4));
+      world1State.cubeOffsetX = Math.max(-0.49, Math.min(0.49, Number(cubeOffsetXInput.value) || 0));
+      world1State.cubeOffsetY = Math.max(-0.49, Math.min(0.49, Number(cubeOffsetYInput.value) || 0));
+      world1State.cubeOffsetZ = Math.max(-0.49, Math.min(0.49, Number(cubeOffsetZInput.value) || 0));
       world1State.chunkScale = Math.max(0.25, Math.min(3, Number(scaleInput.value) || 1));
       world1State.perlinBase = Math.max(0, Math.min(0.5, Number(perlinBaseInput.value) || 0.25));
       world1State.perlinAmplitude = Math.max(0.1, Math.min(0.8, Number(perlinAmpInput.value) || 0.4));
@@ -830,6 +1132,10 @@ function setWorldVisibility() {
       resInput.value = String(world1State.resolution);
       isoInput.value = String(world1State.iso);
       sdfSelect.value = String(world1State.sdfChoice);
+      cubeSizeInput.value = String(world1State.cubeHalfSize);
+      cubeOffsetXInput.value = String(world1State.cubeOffsetX);
+      cubeOffsetYInput.value = String(world1State.cubeOffsetY);
+      cubeOffsetZInput.value = String(world1State.cubeOffsetZ);
       scaleInput.value = String(world1State.chunkScale);
       perlinBaseInput.value = String(world1State.perlinBase);
       perlinAmpInput.value = String(world1State.perlinAmplitude);
@@ -837,6 +1143,10 @@ function setWorldVisibility() {
       resValueSpan.textContent = world1State.resolution;
       isoValueSpan.textContent = world1State.iso.toFixed(2);
       scaleValueSpan.textContent = world1State.chunkScale.toFixed(1);
+      cubeSizeSpan.textContent = world1State.cubeHalfSize.toFixed(2);
+      cubeOffsetXSpan.textContent = world1State.cubeOffsetX.toFixed(2);
+      cubeOffsetYSpan.textContent = world1State.cubeOffsetY.toFixed(2);
+      cubeOffsetZSpan.textContent = world1State.cubeOffsetZ.toFixed(2);
       perlinBaseSpan.textContent = world1State.perlinBase.toFixed(2);
       perlinAmpSpan.textContent = world1State.perlinAmplitude.toFixed(2);
       perlinFreqSpan.textContent = world1State.perlinFrequency.toFixed(1);
@@ -892,9 +1202,9 @@ function setWorldVisibility() {
       if (chunkState.tvSharedEntity) { chunkState.tvSharedEntity.setPosition(pos[4], 0, 0); chunkState.tvSharedEntity.setLocalScale(scale, scale, scale); }
       if (chunkState.tvxEntity) { chunkState.tvxEntity.setPosition(pos[5], 0, 0); chunkState.tvxEntity.setLocalScale(scale, scale, scale); }
       if (chunkState.tvxSharpEntity) { chunkState.tvxSharpEntity.setPosition(pos[6], 0, 0); chunkState.tvxSharpEntity.setLocalScale(scale, scale, scale); }
-      console.log('World 1 rebuilt: resolution=', mcRes, 'iso=', iso, 'sdf=', world1State.sdfChoice, 'scale=', scale);
+      console.log('World 1 rebuilt: resolution=', mcRes, 'iso=', iso, 'sdf=', world1State.sdfChoice, 'cubeHalfSize=', world1State.cubeHalfSize, 'cubeOffset=', [world1State.cubeOffsetX, world1State.cubeOffsetY, world1State.cubeOffsetZ], 'scale=', scale);
     } else if (w === 2) {
-      world2State.resolution = Math.max(6, Math.min(40, parseInt(w2ResInput.value, 10) || 20));
+      world2State.resolution = Math.max(2, Math.min(128, parseInt(w2ResInput.value, 10) || 20));
       world2State.iso = Math.max(0.2, Math.min(0.8, Number(w2IsoInput.value) || 0.5));
       world2State.chunkScale = Math.max(0.25, Math.min(3, Number(w2ScaleInput.value) || 1));
       world2State.gridX = Math.max(1, Math.min(6, parseInt(w2GridXInput.value, 10) || 2));
@@ -976,12 +1286,16 @@ function setWorldVisibility() {
       }
       console.log('World 2 rebuilt: grid=', gx, 'x', gy, 'x', gz, 'resolution=', mcRes, 'iso=', iso, 'scale=', scale);
     } else if (w === 3) {
-      world3State.resolution = Math.max(6, Math.min(48, parseInt(w3ResInput.value, 10) || 24));
+      world3State.resolution = Math.max(2, Math.min(128, parseInt(w3ResInput.value, 10) || 24));
       world3State.iso = Number(w3IsoInput.value) || 0;
       world3State.chunkScale = Math.max(0.25, Math.min(3, Number(w3ScaleInput.value) || 1));
       world3State.gridNx = Math.max(1, Math.min(6, parseInt(w3NxInput.value, 10) || 3));
       world3State.gridNy = Math.max(1, Math.min(6, parseInt(w3NyInput.value, 10) || 3));
       world3State.gridNz = Math.max(1, Math.min(6, parseInt(w3NzInput.value, 10) || 3));
+      world3State.cubeFill = Math.max(0.01, Math.min(0.98, Number(w3CubeSizeInput.value) || 0.8));
+      world3State.cubeOffsetX = Math.max(-0.49, Math.min(0.49, Number(w3CubeOffsetXInput.value) || 0));
+      world3State.cubeOffsetY = Math.max(-0.49, Math.min(0.49, Number(w3CubeOffsetYInput.value) || 0));
+      world3State.cubeOffsetZ = Math.max(-0.49, Math.min(0.49, Number(w3CubeOffsetZInput.value) || 0));
       world3State.flipEdges = flipEdgesCheckW3.checked;
       world3State.noFeatures = noFeaturesCheckW3.checked;
       world3State.featureAngleDeg = (() => { const v = parseInt(w3FeatureAngleInput.value, 10); return Math.max(0, Math.min(90, isNaN(v) ? 30 : v)); })();
@@ -992,12 +1306,20 @@ function setWorldVisibility() {
       w3NxInput.value = String(world3State.gridNx);
       w3NyInput.value = String(world3State.gridNy);
       w3NzInput.value = String(world3State.gridNz);
+      w3CubeSizeInput.value = String(world3State.cubeFill);
+      w3CubeOffsetXInput.value = String(world3State.cubeOffsetX);
+      w3CubeOffsetYInput.value = String(world3State.cubeOffsetY);
+      w3CubeOffsetZInput.value = String(world3State.cubeOffsetZ);
       w3ResSpan.textContent = world3State.resolution;
       w3IsoSpan.textContent = world3State.iso.toFixed(2);
       w3ScaleSpan.textContent = world3State.chunkScale.toFixed(1);
       w3NxSpan.textContent = world3State.gridNx;
       w3NySpan.textContent = world3State.gridNy;
       w3NzSpan.textContent = world3State.gridNz;
+      w3CubeSizeSpan.textContent = world3State.cubeFill.toFixed(2);
+      w3CubeOffsetXSpan.textContent = world3State.cubeOffsetX.toFixed(2);
+      w3CubeOffsetYSpan.textContent = world3State.cubeOffsetY.toFixed(2);
+      w3CubeOffsetZSpan.textContent = world3State.cubeOffsetZ.toFixed(2);
       w3FeatureAngleInput.value = String(world3State.featureAngleDeg);
       w3FeatureAngleSpan.textContent = world3State.featureAngleDeg + '°';
       flipEdgesCheckW3.checked = world3State.flipEdges;
@@ -1016,7 +1338,13 @@ function setWorldVisibility() {
       const nx = world3State.gridNx;
       const ny = world3State.gridNy;
       const nz = world3State.gridNz;
-      const fieldFn = insidePositive(createGridOfCubesSDF({ nx, ny, nz }));
+      const fieldFn = insidePositive(createGridOfCubesSDF({
+        nx, ny, nz,
+        cubeFill: world3State.cubeFill,
+        offsetX: world3State.cubeOffsetX,
+        offsetY: world3State.cubeOffsetY,
+        offsetZ: world3State.cubeOffsetZ
+      }));
       const algo = world3State.algorithm;
       const flip = world3State.flipEdges;
       const runAlgo = (fn) => {
@@ -1042,7 +1370,115 @@ function setWorldVisibility() {
         cubesRoot.addChild(entity);
         chunkState.cubesMeshEntity = entity;
       }
-      console.log('World 3 rebuilt: grid=', nx, 'x', ny, 'x', nz, 'resolution=', mcRes, 'iso=', iso, 'scale=', scale);
+      console.log('World 3 rebuilt: grid=', nx, 'x', ny, 'x', nz, 'resolution=', mcRes, 'iso=', iso, 'cubeFill=', world3State.cubeFill, 'cubeOffset=', [world3State.cubeOffsetX, world3State.cubeOffsetY, world3State.cubeOffsetZ], 'scale=', scale);
+    } else if (w === 4) {
+      world4State.resolution = Math.max(4, Math.min(48, parseInt(w4Res.input.value, 10) || 16));
+      world4State.mapSize = Math.max(16, Math.min(256, parseInt(w4MapSize.input.value, 10) || 64));
+      world4State.rootsPerSide = Math.max(1, Math.min(8, parseInt(w4Roots.input.value, 10) || 4));
+      world4State.perlinAmplitude = Math.max(0, Math.min(20, Number(w4Amp.input.value) || 6));
+      world4State.perlinFrequency = Math.max(0.005, Math.min(0.2, Number(w4Freq.input.value) || 0.05));
+      world4State.perlinBaseY = Math.max(-10, Math.min(10, Number(w4BaseY.input.value) || 0));
+      world4State.splitRadius0 = Math.max(0, Math.min(256, Number(w4R0.input.value) || 22));
+      world4State.splitRadius1 = Math.max(0, Math.min(256, Number(w4R1.input.value) || 10));
+      world4State.featureAngleDeg = Math.max(0, Math.min(90, parseInt(w4FA.input.value, 10) || 30));
+      world4State.flipEdges = w4FlipCheck.checked;
+      world4State.noFeatures = w4NoFeatCheck.checked;
+      world4State.colorByLod = w4ColorCheck.checked;
+
+      const terrainLodRoot = chunkState.terrainLodRoot;
+      if (!terrainLodRoot) return;
+      while (chunkState.lodChunkEntities.length) {
+        const e = chunkState.lodChunkEntities.pop();
+        if (e && e.parent) e.parent.removeChild(e);
+      }
+
+      const res = world4State.resolution;
+      const mapSize = world4State.mapSize;
+      const rootsPerSide = world4State.rootsPerSide;
+      const rootSize = mapSize / rootsPerSide;
+      const maxDepth = world4State.maxDepth;
+      const splitRadius = [world4State.splitRadius0, world4State.splitRadius1];
+      const focus = [0, 0, 0];
+      const makeField = createWorldHeightmap2DFieldFactory({
+        baseY: world4State.perlinBaseY,
+        amplitude: world4State.perlinAmplitude,
+        frequency: world4State.perlinFrequency
+      });
+      const tvxOpts = {
+        flipEdges: world4State.flipEdges,
+        featureAngleDeg: world4State.featureAngleDeg,
+        noFeatures: world4State.noFeatures
+      };
+
+      // Grid of octree roots (each at LOD = maxDepth = coarsest). Each root may subdivide
+      // toward the focus point. Leaf LOD = maxDepth - depth, so depth 0 = LOD maxDepth.
+      const leaves = [];
+      function subdivide(minX, minY, minZ, size, depth) {
+        const cx = minX + size * 0.5;
+        const cy = minY + size * 0.5;
+        const cz = minZ + size * 0.5;
+        const dx = cx - focus[0];
+        const dy = cy - focus[1];
+        const dz = cz - focus[2];
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const canSplit = depth < maxDepth;
+        const shouldSplit = canSplit && dist < splitRadius[depth];
+        if (!shouldSplit) {
+          leaves.push({ minX, minY, minZ, size, lod: maxDepth - depth });
+          return;
+        }
+        const h = size * 0.5;
+        for (let oz = 0; oz < 2; oz++) {
+          for (let oy = 0; oy < 2; oy++) {
+            for (let ox = 0; ox < 2; ox++) {
+              subdivide(minX + ox * h, minY + oy * h, minZ + oz * h, h, depth + 1);
+            }
+          }
+        }
+      }
+      const mapMin = -mapSize * 0.5;
+      for (let rz = 0; rz < rootsPerSide; rz++) {
+        for (let ry = 0; ry < rootsPerSide; ry++) {
+          for (let rx = 0; rx < rootsPerSide; rx++) {
+            subdivide(
+              mapMin + rx * rootSize,
+              mapMin + ry * rootSize,
+              mapMin + rz * rootSize,
+              rootSize,
+              0
+            );
+          }
+        }
+      }
+
+      const lodMaterials = chunkState.lodMaterials || [chunkState.materials.tvx, chunkState.materials.tvx, chunkState.materials.tvx];
+      // Heightmap slab range (with a small safety margin so near-edge chunks aren't skipped).
+      const surfaceMaxY = world4State.perlinBaseY + world4State.perlinAmplitude + 0.01;
+      const surfaceMinY = world4State.perlinBaseY - world4State.perlinAmplitude - 0.01;
+      let totalTris = 0;
+      let skipped = 0;
+      for (const leaf of leaves) {
+        const chunkMaxY = leaf.minY + leaf.size;
+        if (leaf.minY > surfaceMaxY || chunkMaxY < surfaceMinY) { skipped++; continue; }
+        const fieldFn = makeField(leaf.minX, leaf.minY, leaf.minZ, leaf.size);
+        const result = runTransvoxelExtendedSharpNormals(res, 0, fieldFn, tvxOpts);
+        if (!result || !result.indices || result.indices.length === 0) continue;
+        const mesh = createMeshFromMCResult(app.graphicsDevice, result, { center: true });
+        if (!mesh) continue;
+        const mat = world4State.colorByLod ? (lodMaterials[leaf.lod] || chunkState.materials.tvx) : chunkState.materials.tvx;
+        const entity = new pc.Entity('LOD' + leaf.lod + ' chunk');
+        entity.setPosition(leaf.minX + leaf.size * 0.5, leaf.minY + leaf.size * 0.5, leaf.minZ + leaf.size * 0.5);
+        entity.setLocalScale(leaf.size, leaf.size, leaf.size);
+        entity.addComponent('render');
+        entity.render.type = 'asset';
+        entity.render.meshInstances = [new pc.MeshInstance(mesh, mat)];
+        terrainLodRoot.addChild(entity);
+        chunkState.lodChunkEntities.push(entity);
+        totalTris += result.indices.length / 3;
+      }
+      const lodCounts = [0, 0, 0];
+      for (const l of leaves) lodCounts[l.lod]++;
+      console.log('World 4 rebuilt: leaves=', leaves.length, 'meshed=', leaves.length - skipped, 'tris=', totalTris, 'mapSize=', mapSize, 'rootsPerSide=', rootsPerSide, 'LOD counts (0/1/2)=', lodCounts, 'splitRadii=', splitRadius);
     }
     setWorldVisibility();
   };
@@ -1063,6 +1499,11 @@ const cubesRoot = new pc.Entity('Grid of Cubes Root');
 cubesRoot.enabled = false;
 app.root.addChild(cubesRoot);
 chunkState.cubesRoot = cubesRoot;
+
+const terrainLodRoot = new pc.Entity('LOD Terrain Root');
+terrainLodRoot.enabled = false;
+app.root.addChild(terrainLodRoot);
+chunkState.terrainLodRoot = terrainLodRoot;
 
 // Default cube (only visible in World 1)
 const defaultBox = new pc.Entity('Default Box');
@@ -1129,6 +1570,27 @@ function createChunkMaterials() {
 }
 
 chunkState.materials = createChunkMaterials();
+
+function createLodMaterials() {
+  const colors = [
+    new pc.Color(0.35, 0.9, 0.45),   // LOD 0 (finest) - green
+    new pc.Color(0.95, 0.85, 0.2),   // LOD 1 - yellow
+    new pc.Color(0.95, 0.35, 0.25)   // LOD 2 (coarsest) - red
+  ];
+  return colors.map((c) => {
+    let m;
+    try {
+      m = new pc.StandardMaterial();
+    } catch (_) {
+      m = defaultBox.render.material.clone();
+    }
+    m.diffuse = c;
+    m.cull = pc.CULLFACE_NONE;
+    m.update();
+    return m;
+  });
+}
+chunkState.lodMaterials = createLodMaterials();
 
 const mcRes = world1State.resolution;
 const iso = world1State.iso;
